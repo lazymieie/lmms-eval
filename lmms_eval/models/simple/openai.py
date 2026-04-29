@@ -440,7 +440,7 @@ class OpenAICompatible(lmms):
                         imgs.append(self.encode_image(visual))
 
             request_gen_kwargs = dict(gen_kwargs)
-            max_new_tokens = min(request_gen_kwargs.get("max_new_tokens", 1024), 4096)
+            max_new_tokens = request_gen_kwargs.get("max_new_tokens", 1024)
             temperature = request_gen_kwargs.get("temperature", 0)
 
             payload = {

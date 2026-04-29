@@ -177,7 +177,7 @@ class OpenAICompatible(OpenAICompatibleSimple):
             chat_messages_raw = doc_to_messages(self.task_dict[task][split][doc_id])
             chat_messages: ChatMessages = ChatMessages(**{"messages": chat_messages_raw})
             request_gen_kwargs = dict(gen_kwargs)
-            max_new_tokens = min(request_gen_kwargs.get("max_new_tokens", 1024), 4096)
+            max_new_tokens = request_gen_kwargs.get("max_new_tokens", 1024)
             temperature = request_gen_kwargs.get("temperature", 0)
 
             if self.video_fps is not None and self.video_fps > 0:

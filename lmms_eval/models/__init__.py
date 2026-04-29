@@ -97,6 +97,7 @@ AVAILABLE_SIMPLE_MODELS = {
     "videoChatGPT": "VideoChatGPT",
     "video_llava": "VideoLLaVA",
     "video_salmonn_2": "VideoSALMONN2",
+    "videoseek": "VideoSeek",
     "videochat2": "VideoChat2",
     "videollama3": "VideoLLaMA3",
     "videochat_flash": "VideoChat_Flash",

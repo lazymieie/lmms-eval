@@ -1,7 +1,9 @@
-dataset_path: lmms-lab/Video-MME
+dataset_path: /gemini/space/zyf/datasets/lmms-lab/Video-MME/videomme
 dataset_kwargs:
   token: True
-  cache_dir: videomme
+  cache_dir: /gemini/space/zyf/datasets/lmms-lab/Video-MME/videomme
+  data_files:
+    test: /gemini/space/zyf/datasets/lmms-lab/Video-MME/videomme/test-00000-of-00001.parquet
   video: True
   # From_YouTube: True
 task: videomme
