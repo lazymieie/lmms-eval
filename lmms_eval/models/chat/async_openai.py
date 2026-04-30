@@ -1,11 +1,13 @@
 import asyncio
+import json
 import os
 import shutil
 import tempfile
 import time
+import urllib.request
 import uuid
 from multiprocessing import cpu_count
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from accelerate import Accelerator, DistributedType
 from dotenv import load_dotenv
@@ -71,6 +73,8 @@ class AsyncOpenAIChat(lmms):
         prefix_aware_queue: bool = True,
         prefix_hash_chars: int = 256,
         system_prompt: Optional[str] = None,
+        enable_thinking: Optional[bool] = None,
+        thinking_token_budget: Optional[int] = None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -108,6 +112,9 @@ class AsyncOpenAIChat(lmms):
         )
         self.prefix_aware_queue = parse_bool(prefix_aware_queue)
         self.prefix_hash_chars = max(32, int(prefix_hash_chars))
+        self.enable_thinking = None if enable_thinking is None else parse_bool(enable_thinking)
+        self.thinking_token_budget = None if thinking_token_budget is None else int(thinking_token_budget)
+        self._token_count_cache: Dict[str, int] = {}
         if system_prompt is not None:
             self.system_prompt = self._resolve_system_prompt(system_prompt)
         else:
@@ -162,6 +169,91 @@ class AsyncOpenAIChat(lmms):
 
     def generate_until_multi_round(self, requests) -> List[str]:
         raise NotImplementedError("TODO: Implement multi-round generation for LLaVAHF")
+
+    def _build_extra_body(self) -> Optional[Dict[str, Any]]:
+        extra_body: Dict[str, Any] = {}
+        if self.enable_thinking is not None:
+            extra_body["chat_template_kwargs"] = {"enable_thinking": self.enable_thinking}
+        if self.thinking_token_budget is not None:
+            extra_body["thinking_token_budget"] = self.thinking_token_budget
+        return extra_body or None
+
+    def _tokenize_endpoint_url(self) -> Optional[str]:
+        if not self.base_url:
+            return None
+        base_url = self.base_url.rstrip("/")
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+        return f"{base_url}/tokenize"
+
+    def _extract_reasoning_text(self, message) -> str:
+        return getattr(message, "reasoning", None) or getattr(message, "reasoning_content", None) or ""
+
+    async def _count_text_tokens(self, text: str) -> Optional[int]:
+        if not text:
+            return 0
+        if text in self._token_count_cache:
+            return self._token_count_cache[text]
+        tokenize_url = self._tokenize_endpoint_url()
+        if tokenize_url is None:
+            return None
+
+        def _do_request() -> Optional[int]:
+            payload = {"model": self.model_version, "prompt": text}
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            req = urllib.request.Request(tokenize_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            count = data.get("count")
+            if count is None and isinstance(data.get("tokens"), list):
+                count = len(data["tokens"])
+            return int(count) if count is not None else None
+
+        try:
+            count = await asyncio.to_thread(_do_request)
+        except Exception as exc:
+            eval_logger.debug(f"Failed to count tokens via /tokenize: {exc}")
+            return None
+        if count is not None:
+            self._token_count_cache[text] = count
+        return count
+
+    async def _extract_usage_counts(self, response) -> Tuple[int, int, int]:
+        input_tokens = 0
+        output_tokens = 0
+        reasoning_tokens = 0
+        usage = getattr(response, "usage", None)
+        if usage:
+            input_tokens = getattr(usage, "prompt_tokens", 0) or 0
+            completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+            output_tokens = completion_tokens
+
+            completion_details = getattr(usage, "completion_tokens_details", None)
+            if completion_details:
+                reasoning_tokens = getattr(completion_details, "reasoning_tokens", 0) or 0
+            else:
+                reasoning_tokens = getattr(usage, "reasoning_tokens", 0) or 0
+
+            message = response.choices[0].message
+            reasoning_text = self._extract_reasoning_text(message)
+            content_text = message.content or ""
+
+            if reasoning_text and reasoning_tokens == 0 and completion_tokens > 0:
+                if not content_text:
+                    reasoning_tokens = completion_tokens
+                    output_tokens = 0
+                else:
+                    visible_output_tokens = await self._count_text_tokens(content_text)
+                    if visible_output_tokens is not None:
+                        output_tokens = min(completion_tokens, visible_output_tokens)
+                        reasoning_tokens = max(0, completion_tokens - output_tokens)
+
+            if reasoning_tokens > 0:
+                output_tokens = max(0, completion_tokens - reasoning_tokens) if output_tokens == completion_tokens else output_tokens
+
+        return input_tokens, output_tokens, reasoning_tokens
 
     async def maybe_forward_with_tool(self, request: Instance, idx: int):
         """
@@ -224,6 +316,9 @@ class AsyncOpenAIChat(lmms):
         # payload["max_completion_tokens"] = gen_kwargs["max_new_tokens"]
         payload["max_tokens"] = gen_kwargs["max_new_tokens"]
         payload["temperature"] = gen_kwargs["temperature"]
+        extra_body = self._build_extra_body()
+        if extra_body is not None:
+            payload["extra_body"] = extra_body
 
         if self.mcp_client is not None:
             # get the function list from the MCP server
@@ -232,16 +327,9 @@ class AsyncOpenAIChat(lmms):
             payload["tool_choice"] = "auto"  # or "auto" for automatic tool selection
 
         response = await self.client.chat.completions.create(**payload)
-        last_response = response.choices[0].message.content
+        last_response = response.choices[0].message.content or ""
         # Extract usage metrics
-        input_tokens = 0
-        output_tokens = 0
-        reasoning_tokens = 0
-        if hasattr(response, "usage") and response.usage:
-            input_tokens = getattr(response.usage, "prompt_tokens", 0) or 0
-            output_tokens = getattr(response.usage, "completion_tokens", 0) or 0
-            if hasattr(response.usage, "completion_tokens_details") and response.usage.completion_tokens_details:
-                reasoning_tokens = getattr(response.usage.completion_tokens_details, "reasoning_tokens", 0) or 0
+        input_tokens, output_tokens, reasoning_tokens = await self._extract_usage_counts(response)
         total_input_tokens += input_tokens
         total_output_tokens += output_tokens
         total_reasoning_tokens += reasoning_tokens
@@ -286,23 +374,19 @@ class AsyncOpenAIChat(lmms):
                         tool_messages[-1]["content"].extend(tool_message)
                     all_response += "</tool_response>"
 
-            response = await self.client.chat.completions.create(
-                model=self.model_version,
-                messages=messages + tool_messages,
-                max_tokens=gen_kwargs["max_new_tokens"],
-                temperature=gen_kwargs["temperature"],
-                tools=functions,
-                tool_choice="auto",
-            )
+            followup_payload = {
+                "model": self.model_version,
+                "messages": messages + tool_messages,
+                "max_tokens": gen_kwargs["max_new_tokens"],
+                "temperature": gen_kwargs["temperature"],
+                "tools": functions,
+                "tool_choice": "auto",
+            }
+            if extra_body is not None:
+                followup_payload["extra_body"] = extra_body
+            response = await self.client.chat.completions.create(**followup_payload)
             # Extract usage metrics
-            input_tokens = 0
-            output_tokens = 0
-            reasoning_tokens = 0
-            if hasattr(response, "usage") and response.usage:
-                input_tokens = getattr(response.usage, "prompt_tokens", 0) or 0
-                output_tokens = getattr(response.usage, "completion_tokens", 0) or 0
-                if hasattr(response.usage, "completion_tokens_details") and response.usage.completion_tokens_details:
-                    reasoning_tokens = getattr(response.usage.completion_tokens_details, "reasoning_tokens", 0) or 0
+            input_tokens, output_tokens, reasoning_tokens = await self._extract_usage_counts(response)
             total_input_tokens += input_tokens
             total_output_tokens += output_tokens
             total_reasoning_tokens += reasoning_tokens
@@ -314,7 +398,7 @@ class AsyncOpenAIChat(lmms):
                 reasoning_tokens=reasoning_tokens,
                 source="model",
             )
-            last_response = response.choices[0].message.content
+            last_response = response.choices[0].message.content or ""
             try:
                 all_response += last_response
             except Exception as e:
