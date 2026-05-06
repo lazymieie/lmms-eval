@@ -324,6 +324,183 @@ class VideoSeek(lmms):
 
             return wrapped_tool
 
+        original_exec_action = getattr(agent_module.VideoSeekAgent, "_VideoSeekAgent__exec_action")
+
+        def tool_calls_to_actions(agent_self, tool_calls) -> list:
+            actions = []
+            answer_call_idx = None
+            for tool_idx, tool_call in enumerate(tool_calls or []):
+                if isinstance(tool_call, dict):
+                    function_name = tool_call.get("function", {}).get("name")
+                    arguments_text = tool_call.get("function", {}).get("arguments", "{}")
+                    function_id = tool_call.get("id")
+                else:
+                    function_name = getattr(getattr(tool_call, "function", None), "name", None)
+                    arguments_text = getattr(getattr(tool_call, "function", None), "arguments", "{}")
+                    function_id = getattr(tool_call, "id", None)
+                try:
+                    parameters = json.loads(arguments_text or "{}")
+                except Exception:
+                    parameters = {}
+                if agent_self.tool_registry.has_tool(function_name):
+                    if function_name == "answer":
+                        answer_call_idx = tool_idx
+                    actions.append(agent_module.Action(function_name=function_name, parameters=parameters, function_id=function_id))
+            if len(actions) > 1 and answer_call_idx is not None:
+                actions.pop(answer_call_idx)
+            return actions
+
+        def patched_run(agent_self, question: str):
+            agent_self.reset()
+            agent_self.question = question
+            subtitles_str = agent_module.convert_to_free_form_text_representation(agent_self.subtitles, content_type="subtitle")
+            agent_self.messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"Video Duration: {agent_self.duration:.01f}s\n\n"
+                        f"Video Subtitles:\n{subtitles_str}\n\n"
+                        f"Question:\n{question}"
+                    ),
+                }
+            )
+
+            for step in range(agent_self.max_steps):
+                agent_self.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Step [{step + 1} / {agent_self.max_steps}]: "
+                            "Reason over the current state and directly choose the next tool call(s). "
+                            "Follow the Tool Calling Policy and the Final Answer Policy. "
+                            "Return tool calls only; do not provide extra narration outside the tool call response."
+                        ),
+                    }
+                )
+
+                previous_label = _get_thread_call_label()
+                _set_thread_call_label("decision")
+                try:
+                    response = agent_module.call_llm_api(
+                        messages=agent_self.messages,
+                        model_name=agent_self.model_name,
+                        api_base=agent_self.api_base,
+                        api_key=agent_self.api_key,
+                        api_version=agent_self.api_version,
+                        max_tokens=agent_self.max_tokens,
+                        reasoning_effort=agent_self.reasoning_effort,
+                        seed=agent_self.seed,
+                        tools=agent_self.tools,
+                        tool_choice="required",
+                        temperature=agent_self.temperature,
+                    )
+                finally:
+                    _set_thread_call_label(previous_label)
+
+                message = response.choices[0].message if response is not None and getattr(response, "choices", None) else None
+                visible_content = str(getattr(message, "content", "") or "")
+                reasoning_text = str(getattr(message, "reasoning", "") or getattr(message, "reasoning_content", "") or "")
+                thought = reasoning_text or visible_content or ""
+                actions = tool_calls_to_actions(agent_self, getattr(message, "tool_calls", None) if message is not None else None)
+
+                assistant_message = {"role": "assistant", "content": visible_content}
+                if actions and actions[0].function_name != "answer":
+                    assistant_message["tool_calls"] = [
+                        {
+                            "id": action.function_id,
+                            "type": "function",
+                            "function": {
+                                "name": action.function_name,
+                                "arguments": str(action.parameters),
+                            },
+                        }
+                        for action in actions
+                    ]
+                agent_self.messages.append(assistant_message)
+
+                for action in actions:
+                    try:
+                        outcome = original_exec_action(agent_self, action)
+                    except Exception:
+                        outcome = "Tool execution failed."
+                    observation = agent_module.Observation(action=action, outcome=outcome)
+                    if action.parameters is not None:
+                        action.parameters.pop("vr", None)
+                        action.parameters.pop("subtitles", None)
+                    agent_self.trajectory_steps.append(
+                        agent_module.TrajectoryStep(
+                            step_id=step + 1,
+                            thought=thought,
+                            action=action,
+                            observation=observation,
+                        )
+                    )
+                    if action.function_name == "answer":
+                        agent_self.final_answer = observation.outcome
+                        break
+                    agent_self.messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": action.function_id,
+                            "content": f"Observation from `{str(action.to_dict())}`:\n{outcome}",
+                        }
+                    )
+
+                if len(actions) == 0:
+                    agent_self.messages.append(
+                        {
+                            "role": "user",
+                            "content": "There is no valid function call in your response. You must emit a valid tool call in each response.",
+                        }
+                    )
+                    continue
+
+                if agent_self.final_answer is not None:
+                    break
+
+            if agent_self.final_answer is None:
+                agent_self.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "You have reached the maximum number of steps. "
+                            f"Question:\n{question}\n\n"
+                            "If the question is a multiple-choice question, please directly answer with the option's letter from the given choices without any additional text."
+                        ),
+                    }
+                )
+                previous_label = _get_thread_call_label()
+                _set_thread_call_label("final_answer_fallback")
+                try:
+                    response = agent_module.call_llm_api(
+                        messages=agent_self.messages,
+                        model_name=agent_self.model_name,
+                        api_base=agent_self.api_base,
+                        api_key=agent_self.api_key,
+                        api_version=agent_self.api_version,
+                        max_tokens=agent_self.max_tokens,
+                        reasoning_effort=agent_self.reasoning_effort,
+                        seed=agent_self.seed,
+                        temperature=agent_self.temperature,
+                    )
+                finally:
+                    _set_thread_call_label(previous_label)
+                agent_self.final_answer = response.choices[0].message.content
+                agent_self.messages.append({"role": "assistant", "content": agent_self.final_answer})
+                return agent_module.Trajectory(
+                    question=question,
+                    steps=agent_self.trajectory_steps,
+                    final_answer=agent_self.final_answer,
+                    finish_reason="reach_max_steps",
+                )
+
+            return agent_module.Trajectory(
+                question=question,
+                steps=agent_self.trajectory_steps,
+                final_answer=agent_self.final_answer,
+                finish_reason="stop",
+            )
+
         instrumented_overview = make_tool_wrapper("overview", overview_module.execute_overview)
         instrumented_skim = make_tool_wrapper("skim", skim_module.execute_skim)
         instrumented_focus = make_tool_wrapper("focus", focus_module.execute_focus)
@@ -347,6 +524,7 @@ class VideoSeek(lmms):
         tools_package.DEFAULT_TOOL_REGISTRY._tool_functions["skim"] = instrumented_skim
         tools_package.DEFAULT_TOOL_REGISTRY._tool_functions["focus"] = instrumented_focus
         tools_package.DEFAULT_TOOL_REGISTRY._tool_functions["answer"] = instrumented_answer
+        agent_module.VideoSeekAgent.run = patched_run
         utils_module._lmms_eval_instrumented = True
 
     def _build_usage_summary(self, recorder: dict) -> dict:
