@@ -411,7 +411,7 @@ class VideoSeek(lmms):
                             "type": "function",
                             "function": {
                                 "name": action.function_name,
-                                "arguments": str(action.parameters),
+                                "arguments": json.dumps(action.parameters, ensure_ascii=False),
                             },
                         }
                         for action in actions
