@@ -44,6 +44,17 @@ load_dotenv(verbose=True)
 class AsyncOpenAIChat(lmms):
     is_simple = False
 
+    @staticmethod
+    def _count_image_parts(messages: list[dict]) -> int:
+        count = 0
+        for message in messages:
+            content = message.get("content", [])
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        count += 1
+        return count
+
     def __init__(
         self,
         model_version: str = "grok-2-latest",
@@ -300,6 +311,7 @@ class AsyncOpenAIChat(lmms):
 
         payload = {"messages": messages}
         payload["model"] = self.model_version
+        frames_used = self._count_image_parts(messages)
         all_response = ""
         total_input_tokens = 0
         total_output_tokens = 0
@@ -403,7 +415,7 @@ class AsyncOpenAIChat(lmms):
                 all_response += last_response
             except Exception as e:
                 all_response += str(e)
-        return all_response, idx, TokenCounts(input_tokens=total_input_tokens, output_tokens=total_output_tokens, reasoning_tokens=total_reasoning_tokens)
+        return all_response, idx, TokenCounts(input_tokens=total_input_tokens, output_tokens=total_output_tokens, reasoning_tokens=total_reasoning_tokens), {"frames_used": frames_used}
 
     def generate_until(self, requests) -> List[GenerationResult]:
         results = []
@@ -435,15 +447,15 @@ class AsyncOpenAIChat(lmms):
 
             async def _process(req, idx):
                 if is_budget_exceeded():
-                    return "[LMMS_EVAL_BUDGET_EXCEEDED]", idx, TokenCounts(), True, False, 0.0
+                    return "[LMMS_EVAL_BUDGET_EXCEEDED]", idx, TokenCounts(), {"frames_used": 0}, True, False, 0.0
                 started_at = time.time()
                 rate_limited = False
                 last_error_msg = "unknown error"
                 for attempt in range(self.max_retries):
                     try:
-                        content, original_idx, token_counts = await self.maybe_forward_with_tool(req, idx)
+                        content, original_idx, token_counts, generation_info = await self.maybe_forward_with_tool(req, idx)
                         elapsed = time.time() - started_at
-                        return content, original_idx, token_counts, True, rate_limited, elapsed
+                        return content, original_idx, token_counts, generation_info, True, rate_limited, elapsed
                     except Exception as exc:
                         error_msg = str(exc)
                         last_error_msg = error_msg
@@ -457,7 +469,7 @@ class AsyncOpenAIChat(lmms):
                 elapsed = time.time() - started_at
                 error_preview = last_error_msg.replace("\n", " ")[:200]
                 failure_content = f"[LMMS_EVAL_REQUEST_FAILED after {self.max_retries} retries] {error_preview}"
-                return failure_content, idx, TokenCounts(), False, rate_limited, elapsed
+                return failure_content, idx, TokenCounts(), {"frames_used": 0}, False, rate_limited, elapsed
 
             failed_requests = 0
             rate_limited_requests = 0
@@ -521,11 +533,12 @@ class AsyncOpenAIChat(lmms):
                         content,
                         request_idx,
                         token_counts,
+                        generation_info,
                         success,
                         rate_limited,
                         elapsed,
                     ) = task.result()
-                    res.append((GenerationResult(text=content, token_counts=token_counts), request_idx))
+                    res.append((GenerationResult(text=content, token_counts=token_counts, generation_info=generation_info), request_idx))
                     if not success:
                         failed_requests += 1
                     if rate_limited:

@@ -332,7 +332,7 @@ class OpenAICompatible(lmms):
             self.adaptive_config.max_concurrency if self.adaptive_concurrency else current_concurrency,
         )
 
-        def process_single_request(local_index: int, payload: dict):
+        def process_single_request(local_index: int, payload: dict, frames_used: int):
             started_at = time.time()
             rate_limited = False
             last_error_msg = "unknown error"
@@ -357,7 +357,7 @@ class OpenAICompatible(lmms):
                             reasoning_tokens=(getattr(response.usage.completion_tokens_details, "reasoning_tokens", 0) or 0) if hasattr(response.usage, "completion_tokens_details") and response.usage.completion_tokens_details else 0,
                         )
                     latency = time.time() - started_at
-                    return response_text, local_index, True, rate_limited, latency, token_counts
+                    return response_text, local_index, True, rate_limited, latency, token_counts, frames_used
                 except Exception as exc:
                     error_msg = str(exc)
                     last_error_msg = error_msg
@@ -371,7 +371,7 @@ class OpenAICompatible(lmms):
             latency = time.time() - started_at
             error_preview = last_error_msg.replace("\n", " ")[:200]
             failure_content = f"[LMMS_EVAL_REQUEST_FAILED after {self.max_retries} retries] {error_preview}"
-            return failure_content, local_index, False, rate_limited, latency, None
+            return failure_content, local_index, False, rate_limited, latency, None, frames_used
 
         def maybe_update_concurrency(force: bool = False) -> None:
             nonlocal current_concurrency
@@ -422,6 +422,7 @@ class OpenAICompatible(lmms):
                 split_name,
             ) = ordered_requests[global_index]
             visuals = [doc_to_visual_fn(self.task_dict[task_name][split_name][doc_id_single])]
+            frames_used = 0
             if None in visuals:
                 imgs = []
             else:
@@ -431,6 +432,7 @@ class OpenAICompatible(lmms):
                     if isinstance(visual, str) and (".mp4" in visual or ".avi" in visual or ".mov" in visual or ".flv" in visual or ".wmv" in visual or ".webm" in visual or ".mkv" in visual):
                         frames = self.encode_video(visual, self.max_frames_num)
                         imgs.extend(frames)
+                        frames_used += len(frames)
                     elif isinstance(visual, str) and (".wav" in visual or ".mp3" in visual or ".flac" in visual or ".aac" in visual or ".ogg" in visual or ".m4a" in visual):
                         audio_b64, audio_format = self.encode_audio_file(visual)
                         imgs.append({"audio_b64": audio_b64, "audio_format": audio_format})
@@ -473,7 +475,7 @@ class OpenAICompatible(lmms):
                 payload.pop("max_tokens")
                 payload["max_completion_tokens"] = max_new_tokens
 
-            return payload
+            return payload, frames_used
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             while cursor < len(dispatch_order) or in_flight:
@@ -484,8 +486,8 @@ class OpenAICompatible(lmms):
                         cursor += 1
                         continue
                     request_index = dispatch_order[cursor]
-                    payload = build_payload_for_index(request_index)
-                    future = executor.submit(process_single_request, request_index, payload)
+                    payload, frames_used = build_payload_for_index(request_index)
+                    future = executor.submit(process_single_request, request_index, payload, frames_used)
                     in_flight[future] = request_index
                     cursor += 1
 
@@ -501,9 +503,14 @@ class OpenAICompatible(lmms):
                         rate_limited,
                         latency,
                         token_counts,
+                        frames_used,
                     ) = future.result()
                     in_flight.pop(future, None)
-                    reordered_responses[local_index] = GenerationResult(text=response_text, token_counts=token_counts)
+                    reordered_responses[local_index] = GenerationResult(
+                        text=response_text,
+                        token_counts=token_counts,
+                        generation_info={"frames_used": frames_used},
+                    )
                     if not success:
                         failed_requests += 1
                     if rate_limited:

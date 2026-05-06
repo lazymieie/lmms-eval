@@ -34,6 +34,17 @@ load_dotenv(verbose=True)
 class OpenAICompatible(OpenAICompatibleSimple):
     is_simple = False
 
+    @staticmethod
+    def _count_image_parts(messages: list[dict]) -> int:
+        count = 0
+        for message in messages:
+            content = message.get("content", [])
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        count += 1
+        return count
+
     def generate_until(self, requests) -> List[GenerationResult]:
         if not requests:
             return []
@@ -75,9 +86,9 @@ class OpenAICompatible(OpenAICompatibleSimple):
             self.adaptive_config.max_concurrency if self.adaptive_concurrency else current_concurrency,
         )
 
-        def process_single_request(local_index: int, payload: dict | None):
+        def process_single_request(local_index: int, payload: dict | None, frames_used: int):
             if payload is None:
-                return "", local_index, False, False, 0.0, 0, 0, 0
+                return "", local_index, False, False, 0.0, 0, 0, 0, frames_used
             started_at = time.time()
             rate_limited = False
             last_error_msg = "unknown error"
@@ -115,6 +126,7 @@ class OpenAICompatible(OpenAICompatibleSimple):
                         completion_tokens,
                         input_tokens,
                         reasoning_tokens,
+                        frames_used,
                     )
                 except Exception as exc:
                     error_msg = str(exc)
@@ -129,7 +141,7 @@ class OpenAICompatible(OpenAICompatibleSimple):
             elapsed = time.time() - started_at
             error_preview = last_error_msg.replace("\n", " ")[:200]
             failure_content = f"[LMMS_EVAL_REQUEST_FAILED after {self.max_retries} retries] {error_preview}"
-            return failure_content, local_index, False, rate_limited, elapsed, 0, 0, 0
+            return failure_content, local_index, False, rate_limited, elapsed, 0, 0, 0, frames_used
 
         def maybe_update_concurrency(force: bool = False) -> None:
             nonlocal current_concurrency
@@ -170,7 +182,7 @@ class OpenAICompatible(OpenAICompatibleSimple):
             latencies = []
             completed_since_adapt = 0
 
-        def build_payload_for_index(global_index: int) -> dict:
+        def build_payload_for_index(global_index: int) -> tuple[dict, int]:
             req = reordered_requests[global_index]
             _, doc_to_messages, gen_kwargs, doc_id, task, split = req.args
 
@@ -191,6 +203,7 @@ class OpenAICompatible(OpenAICompatibleSimple):
                 "max_tokens": max_new_tokens,
                 "temperature": temperature,
             }
+            frames_used = self._count_image_parts(payload["messages"])
 
             if "o1" in self.model_version or "o3" in self.model_version or "o4" in self.model_version or "gpt-5" in self.model_version:
                 payload.pop("temperature")
@@ -198,13 +211,13 @@ class OpenAICompatible(OpenAICompatibleSimple):
                 payload["response_format"] = {"type": "text"}
                 payload["max_completion_tokens"] = 5000
 
-            return payload
+            return payload, frames_used
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             while cursor < len(dispatch_order) or in_flight:
                 while cursor < len(dispatch_order) and len(in_flight) < max(1, current_concurrency):
                     request_index = dispatch_order[cursor]
-                    payload = build_payload_for_index(request_index)
+                    payload, frames_used = build_payload_for_index(request_index)
                     if payload is None:
                         responses[request_index] = GenerationResult(text="", token_counts=TokenCounts())
                         pbar.update(1)
@@ -218,7 +231,7 @@ class OpenAICompatible(OpenAICompatibleSimple):
                         continue
 
                     assert payload is not None
-                    future = executor.submit(process_single_request, request_index, payload)
+                    future = executor.submit(process_single_request, request_index, payload, frames_used)
                     in_flight[future] = request_index
                     cursor += 1
 
@@ -236,6 +249,7 @@ class OpenAICompatible(OpenAICompatibleSimple):
                         completion_tokens,
                         input_tokens,
                         reasoning_tokens,
+                        frames_used,
                     ) = future.result()
                     in_flight.pop(future, None)
                     responses[local_index] = GenerationResult(
@@ -245,6 +259,7 @@ class OpenAICompatible(OpenAICompatibleSimple):
                             output_tokens=completion_tokens,
                             reasoning_tokens=reasoning_tokens,
                         ),
+                        generation_info={"frames_used": frames_used},
                     )
                     total_latency += elapsed
                     total_tokens += completion_tokens

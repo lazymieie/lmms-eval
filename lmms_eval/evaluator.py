@@ -1025,6 +1025,7 @@ def evaluate(
             text, tc = unwrap_generation_output(x)
             req.resps.append(text)
             req.token_counts.append(tc)
+            req.generation_infos.append(getattr(x, "generation_info", None))
 
         if is_budget_exceeded():
             eval_logger.warning("Token budget reached after '{}' requests. Skipping remaining request types.", reqtype)
@@ -1170,12 +1171,17 @@ def evaluate(
                     input_media = _collect_input_media(doc, filtered_arguments)
 
                     per_sample_tc = []
+                    per_sample_generation_info = []
                     for req in requests:
                         if req.token_counts:
                             tc = req.token_counts[0]
                             per_sample_tc.append(tc.to_dict() if tc is not None else None)
                         else:
                             per_sample_tc.append(None)
+                        if req.generation_infos:
+                            per_sample_generation_info.append(req.generation_infos[0])
+                        else:
+                            per_sample_generation_info.append(None)
 
                     example = {
                         "doc_id": doc_id,
@@ -1185,6 +1191,7 @@ def evaluate(
                         "resps": [req.raw_filtered_resps.get(filter_key, req.resps) for req in requests],
                         "filtered_resps": [req.filtered_resps[filter_key] for req in requests],
                         "token_counts": per_sample_tc,
+                        "generation_info": per_sample_generation_info,
                         "doc_hash": hash_string(
                             json.dumps(
                                 requests[0].doc,
