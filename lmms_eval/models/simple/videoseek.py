@@ -218,10 +218,12 @@ class VideoSeek(lmms):
         verbose: bool = False,
         extract_answer: bool = True,
         timeout: int = 1800,
+        batch_size: int | str = 1,
         num_workers: int = 1,
         sample_retry_attempts: int = 0,
         sample_retry_backoff_s: float = 2.0,
         run_name: str = "",
+        **kwargs,
     ) -> None:
         super().__init__()
         self.model_name = model_name
@@ -237,15 +239,27 @@ class VideoSeek(lmms):
         self.verbose = _as_bool(verbose)
         self.extract_answer = _as_bool(extract_answer)
         self.timeout = int(timeout)
+        self.batch_size_per_gpu = int(batch_size)
         self.num_workers = max(1, int(num_workers))
         self.sample_retry_attempts = max(0, int(sample_retry_attempts))
         self.sample_retry_backoff_s = max(0.0, float(sample_retry_backoff_s))
+        if self.batch_size_per_gpu != 1:
+            eval_logger.warning(
+                "VideoSeek uses num_workers for concurrency; "
+                f"batch_size={self.batch_size_per_gpu} is accepted for lmms-eval compatibility but is not used for scheduling."
+            )
+        if kwargs:
+            eval_logger.warning(f"Unknown model_args ignored: {list(kwargs.keys())}.")
         run_suffix = run_name.strip() if isinstance(run_name, str) else ""
         if not run_suffix:
             run_suffix = time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns()}"
         self.run_dir = self.output_root / f"run_{run_suffix}"
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self._write_run_manifest()
+
+    @property
+    def batch_size(self):
+        return self.batch_size_per_gpu
 
     def _build_agent_config(self) -> dict:
         return {
