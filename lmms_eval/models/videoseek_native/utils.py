@@ -172,21 +172,23 @@ def call_llm_api(
     response = None
     error = None
     try:
-        response = completion(
-            model=model_name,
-            messages=messages,
-            api_base=api_base,
-            api_key=api_key,
-            api_version=api_version,
-            max_completion_tokens=max_tokens,
-            seed=seed,
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            tools=tools,
-            tool_choice=tool_choice,
-            response_format={"type": "json_object"} if return_json else None,
-            timeout=timeout,
-        )
+        request_kwargs = {
+            "model": model_name,
+            "messages": messages,
+            "api_base": api_base,
+            "api_key": api_key,
+            "api_version": api_version,
+            "max_completion_tokens": max_tokens,
+            "seed": seed,
+            "temperature": temperature,
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "response_format": {"type": "json_object"} if return_json else None,
+            "timeout": timeout,
+        }
+        if reasoning_effort not in (None, "", "none"):
+            request_kwargs["reasoning_effort"] = reasoning_effort
+        response = completion(**request_kwargs)
         return response
     except Exception as exc:
         error = str(exc)
