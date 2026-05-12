@@ -27,7 +27,6 @@ REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-180}"
 # ----------------------
 REPO_ROOT="/gemini/space/gjx/lmms-eval"
 PYTHON_BIN="${PYTHON_BIN:-${REPO_ROOT}/.venv/bin/python}"
-VIDEOSEEK_ROOT="${VIDEOSEEK_ROOT:-/gemini/space/gjx/videoseek}"
 
 export HF_DATASETS_OFFLINE="${HF_DATASETS_OFFLINE:-1}"
 export HF_HOME="${HF_HOME:-/gemini/space/zyf}"
@@ -43,10 +42,13 @@ LOG_SUFFIX="${LOG_SUFFIX:-videoseek_qwen35_397b_api_$(date +%Y%m%d_%H%M%S)}"
 VERBOSITY="${VERBOSITY:-INFO}"
 
 # VideoSeek args
-MAX_STEPS="${MAX_STEPS:-20}"
-MAX_TOKENS="${MAX_TOKENS:-8192}"
+MAX_STEPS="${MAX_STEPS:-6}"
+MAX_TOKENS="${MAX_TOKENS:-4096}"
 REASONING_EFFORT="${REASONING_EFFORT:-medium}"
 TEMPERATURE="${TEMPERATURE:-0}"
+NUM_WORKERS="${NUM_WORKERS:-1}"
+SAMPLE_RETRY_ATTEMPTS="${SAMPLE_RETRY_ATTEMPTS:-0}"
+SAMPLE_RETRY_BACKOFF_S="${SAMPLE_RETRY_BACKOFF_S:-2.0}"
 
 echo "=============================================="
 echo "VideoMME Evaluation via VideoSeek"
@@ -55,9 +57,9 @@ echo "  API URL:      ${API_URL}"
 echo "  API Base:     ${API_BASE}"
 echo "  Model:        ${MODEL_NAME_FOR_LITELLM}"
 echo "  Python:       ${PYTHON_BIN}"
-echo "  VideoSeek:    ${VIDEOSEEK_ROOT}"
 echo "  Tasks:        ${TASKS}"
 echo "  Batch Size:   ${BATCH_SIZE}"
+echo "  Workers:      ${NUM_WORKERS}"
 echo "  Limit:        ${LIMIT:-<none>}"
 echo "  Output Path:  ${OUTPUT_PATH}"
 echo "=============================================="
@@ -65,11 +67,6 @@ echo ""
 
 if [ ! -x "${PYTHON_BIN}" ]; then
     echo "Error: Python not found or not executable: ${PYTHON_BIN}"
-    exit 1
-fi
-
-if [ ! -d "${VIDEOSEEK_ROOT}" ]; then
-    echo "Error: VideoSeek repo not found: ${VIDEOSEEK_ROOT}"
     exit 1
 fi
 
@@ -81,7 +78,7 @@ cd "${REPO_ROOT}"
 
 "${PYTHON_BIN}" -m lmms_eval \
   --model videoseek \
-  --model_args "videoseek_root=${VIDEOSEEK_ROOT},model_name=${MODEL_NAME_FOR_LITELLM},api_base=${API_BASE},api_key=${API_KEY},max_steps=${MAX_STEPS},max_tokens=${MAX_TOKENS},reasoning_effort=${REASONING_EFFORT},temperature=${TEMPERATURE},timeout=${REQUEST_TIMEOUT}" \
+  --model_args "model_name=${MODEL_NAME_FOR_LITELLM},api_base=${API_BASE},api_key=${API_KEY},max_steps=${MAX_STEPS},max_tokens=${MAX_TOKENS},reasoning_effort=${REASONING_EFFORT},temperature=${TEMPERATURE},timeout=${REQUEST_TIMEOUT},num_workers=${NUM_WORKERS},sample_retry_attempts=${SAMPLE_RETRY_ATTEMPTS},sample_retry_backoff_s=${SAMPLE_RETRY_BACKOFF_S}" \
   --tasks "${TASKS}" \
   --batch_size "${BATCH_SIZE}" \
   ${LIMIT} \

@@ -26,7 +26,6 @@ API_BASE="http://${HOST}:${PORT}/v1"
 API_KEY="any"
 MODEL_VERSION="Qwen3.5-27B"
 VIDEOSEEK_MODEL_VERSION="openai/${MODEL_VERSION}"
-VIDEOSEEK_ROOT="${VIDEOSEEK_ROOT:-/Users/lazymieie/Desktop/ae/videoseek}"
 
 # Task Configuration
 export HF_DATASETS_OFFLINE=1
@@ -36,20 +35,20 @@ TASKS="${TASKS:-videomme}"
 DATASET_PATH="/gemini/space/zyf/datasets/lmms-lab/Video-MME"
 
 # Evaluation Configuration
-BATCH_SIZE="${BATCH_SIZE:-10}"
-NUM_WORKERS="${NUM_WORKERS:-4}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
+NUM_WORKERS="${NUM_WORKERS:-1}"
 LIMIT="${LIMIT:-}"
 OUTPUT_PATH="${OUTPUT_PATH:-./logs/videoseek_qwen35_27b_videomme_api}"
 LOG_SUFFIX="${LOG_SUFFIX:-videoseek_qwen35_27b_api_$(date +%Y%m%d_%H%M%S)}"
 VERBOSITY="${VERBOSITY:-DEBUG}"
 
 # VideoSeek args
-MAX_STEPS="${MAX_STEPS:-10}"
-MAX_TOKENS="${MAX_TOKENS:-32768}"
+MAX_STEPS="${MAX_STEPS:-6}"
+MAX_TOKENS="${MAX_TOKENS:-4096}"
 REASONING_EFFORT="${REASONING_EFFORT:-medium}"
 TEMPERATURE="${TEMPERATURE:-0}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-1800}"
-SAMPLE_RETRY_ATTEMPTS="${SAMPLE_RETRY_ATTEMPTS:-2}"
+SAMPLE_RETRY_ATTEMPTS="${SAMPLE_RETRY_ATTEMPTS:-0}"
 SAMPLE_RETRY_BACKOFF_S="${SAMPLE_RETRY_BACKOFF_S:-2.0}"
 
 # ----------------------
@@ -69,18 +68,12 @@ else
 fi
 echo ""
 
-if [ ! -d "${VIDEOSEEK_ROOT}" ]; then
-    echo "Error: VideoSeek repo not found: ${VIDEOSEEK_ROOT}"
-    exit 1
-fi
-
 # ----------------------
 # Print Configuration
 # ----------------------
 echo "Configuration:"
 echo "  API Base URL:   ${API_BASE}"
 echo "  Model:          ${VIDEOSEEK_MODEL_VERSION}"
-echo "  VideoSeek:      ${VIDEOSEEK_ROOT}"
 echo "  Tasks:          ${TASKS}"
 echo "  Batch Size:     ${BATCH_SIZE}"
 echo "  Workers:        ${NUM_WORKERS}"
@@ -100,7 +93,7 @@ echo ""
 python -m lmms_eval \
   --model videoseek \
   --force_simple \
-  --model_args "videoseek_root=${VIDEOSEEK_ROOT},model_name=${VIDEOSEEK_MODEL_VERSION},api_base=${API_BASE},api_key=${API_KEY},max_steps=${MAX_STEPS},max_tokens=${MAX_TOKENS},reasoning_effort=${REASONING_EFFORT},temperature=${TEMPERATURE},timeout=${REQUEST_TIMEOUT},num_workers=${NUM_WORKERS},sample_retry_attempts=${SAMPLE_RETRY_ATTEMPTS},sample_retry_backoff_s=${SAMPLE_RETRY_BACKOFF_S}" \
+  --model_args "model_name=${VIDEOSEEK_MODEL_VERSION},api_base=${API_BASE},api_key=${API_KEY},max_steps=${MAX_STEPS},max_tokens=${MAX_TOKENS},reasoning_effort=${REASONING_EFFORT},temperature=${TEMPERATURE},timeout=${REQUEST_TIMEOUT},num_workers=${NUM_WORKERS},sample_retry_attempts=${SAMPLE_RETRY_ATTEMPTS},sample_retry_backoff_s=${SAMPLE_RETRY_BACKOFF_S}" \
   --tasks "${TASKS}" \
   --batch_size "${BATCH_SIZE}" \
   ${LIMIT} \

@@ -2,11 +2,11 @@ import base64
 import os
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 from urllib.parse import unquote
 
 import numpy as np
+from accelerate import Accelerator, DistributedType
 from dotenv import load_dotenv
 from loguru import logger as eval_logger
 from openai import AzureOpenAI, OpenAI
@@ -39,17 +39,6 @@ VideoReader, _ = optional_import("decord", "VideoReader")
 cpu, _ = optional_import("decord", "cpu")
 
 load_dotenv(verbose=True)
-
-
-@dataclass
-class _LocalAcceleratorShim:
-    local_process_index: int = 0
-    num_processes: int = 1
-    device: str = "cpu"
-    is_local_main_process: bool = True
-
-    def wait_for_everyone(self) -> None:
-        return None
 
 
 def _normalize_openai_message_content(content) -> str:
@@ -173,17 +162,24 @@ class OpenAICompatible(lmms):
             )
         )
 
-        # This backend only issues remote API calls. Avoid initializing
-        # Accelerate here because it can hang on cluster environments even when
-        # no local distributed runtime is actually needed.
-        self._rank = int(os.environ.get("LOCAL_RANK", os.environ.get("RANK", 0)))
-        self._world_size = int(os.environ.get("WORLD_SIZE", 1))
-        self.accelerator = _LocalAcceleratorShim(
-            local_process_index=self._rank,
-            num_processes=self._world_size,
-        )
-        if self._world_size > 1 and self.accelerator.is_local_main_process:
-            eval_logger.info(f"Using {self._world_size} processes with API-level data parallelism")
+        accelerator = Accelerator()
+        # assert self.batch_size_per_gpu == 1, "Llava currently does not support batched generation. See https://github.com/haotian-liu/LLaVA/issues/754. HF Llava also has this issue."
+        if accelerator.num_processes > 1:
+            assert accelerator.distributed_type in [
+                DistributedType.FSDP,
+                DistributedType.MULTI_GPU,
+                DistributedType.DEEPSPEED,
+            ], "Unsupported distributed type provided. Only DDP and FSDP are supported."
+            self.accelerator = accelerator
+            if self.accelerator.is_local_main_process:
+                eval_logger.info(f"Using {accelerator.num_processes} devices with data parallelism")
+            self._rank = self.accelerator.local_process_index
+            self._world_size = self.accelerator.num_processes
+        else:
+            self.accelerator = accelerator
+            self._rank = self.accelerator.local_process_index
+            self._world_size = self.accelerator.num_processes
+
         self.device = self.accelerator.device
         self.batch_size_per_gpu = int(batch_size)
 
