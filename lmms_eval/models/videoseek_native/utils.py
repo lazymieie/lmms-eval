@@ -188,7 +188,15 @@ def call_llm_api(
         }
         if reasoning_effort not in (None, "", "none"):
             request_kwargs["reasoning_effort"] = reasoning_effort
-        response = completion(**request_kwargs)
+        try:
+            response = completion(**request_kwargs)
+        except Exception as exc:
+            error_text = str(exc)
+            if "reasoning_effort" in error_text and "does not support parameters" in error_text and "reasoning_effort" in request_kwargs:
+                request_kwargs.pop("reasoning_effort", None)
+                response = completion(**request_kwargs)
+            else:
+                raise
         return response
     except Exception as exc:
         error = str(exc)
