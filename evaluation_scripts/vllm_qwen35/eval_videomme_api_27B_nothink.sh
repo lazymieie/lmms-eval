@@ -42,12 +42,12 @@ DATASET_PATH="/gemini/space/zyf/datasets/lmms-lab/Video-MME"
 BATCH_SIZE=10
 # LIMIT="${LIMIT:---limit 10}"  # Set LIMIT="--limit 10" for testing
 LIMIT="${LIMIT:---limit 100}"
-OUTPUT_PATH="./logs/qwen35_27b_videomme_api_frames10_100"
-LOG_SUFFIX="qwen35_27b_api_102400_$(date +%Y%m%d_%H%M%S)"
+OUTPUT_PATH="./logs/qwen35_27b_videomme_api_frames256_100_nothink"
+LOG_SUFFIX="qwen35_27b_api_16_$(date +%Y%m%d_%H%M%S)"
 VERBOSITY="${VERBOSITY:-DEBUG}"
 
 #GEN ARGS
-MAX_NEW_TOKENS=102400
+MAX_NEW_TOKENS=16
 
 # ----------------------
 # Check Server Health
@@ -86,11 +86,9 @@ echo ""
 # Run Evaluation
 # ----------------------
 # source /gemini/space/zyf/lmms-eval/.newvenv/bin/activate
-#  --model_args "model_version=${MODEL_VERSION},base_url=${API_BASE},api_key=${API_KEY},fps=2,max_frames=256,num_cpus=4,timeout=600,max_retries=8" \
-
 python -m lmms_eval \
   --model async_openai \
-  --model_args "model_version=${MODEL_VERSION},base_url=${API_BASE},api_key=${API_KEY},nframes=10,num_cpus=4,timeout=600,max_retries=8" \
+  --model_args "model_version=${MODEL_VERSION},base_url=${API_BASE},api_key=${API_KEY},fps=2,max_frames=256,num_cpus=4,timeout=600,max_retries=8,enable_thinking=false" \
   --gen_kwargs "max_new_tokens=${MAX_NEW_TOKENS},temperature=0" \
   --tasks "${TASKS}" \
   --batch_size "${BATCH_SIZE}" \

@@ -37,7 +37,11 @@ def _safe_int(value, default: int = 0) -> int:
 
 def _subtitle_path_for_video(video_path: str) -> str | None:
     path = Path(video_path)
-    candidates = [path.with_suffix(".srt"), path.parent.parent / "subtitle" / f"{path.stem}.srt"]
+    candidates = [
+        path.with_suffix(".srt"),
+        path.parent.parent / "subtitle" / f"{path.stem}.srt",
+        path.parent.parent / "subtitle" / "subtitle" / f"{path.stem}.srt",
+    ]
     for candidate in candidates:
         if candidate.exists():
             return str(candidate)
