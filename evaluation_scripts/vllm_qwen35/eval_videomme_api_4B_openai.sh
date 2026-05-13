@@ -26,28 +26,28 @@ set -euo pipefail
 # ----------------------
 # vllm
 PORT="${1:-5590}"
-HOST="10.233.27.148"
+HOST="10.233.58.81"
 API_BASE="http://${HOST}:${PORT}/v1"
 API_KEY="any"  # vLLM doesn't require real API key, but needs a non-empty string
-MODEL_VERSION="Qwen3.5-27B"
+MODEL_VERSION="Qwen3.5-4B"
 
 # Task Configuration
 export HF_DATASETS_OFFLINE=1
 export HF_HOME="/gemini/space/zyf"
 export HF_DATASETS_CACHE="/gemini/space/gjx/lmms-eval/.cache/hf_datasets"
-TASKS="videomme"
+TASKS="videomme_long"
 DATASET_PATH="/gemini/space/zyf/datasets/lmms-lab/Video-MME"
 
 # Evaluation Configuration
 BATCH_SIZE=10
 # LIMIT="${LIMIT:---limit 10}"  # Set LIMIT="--limit 10" for testing
-LIMIT="${LIMIT:---limit 100}"
-OUTPUT_PATH="./logs/qwen35_27b_videomme_api_frames10_100"
-LOG_SUFFIX="qwen35_27b_api_102400_$(date +%Y%m%d_%H%M%S)"
+LIMIT="${LIMIT:-}"
+OUTPUT_PATH="./logs/qwen35_4b_videomme_api_openai_long"
+LOG_SUFFIX="qwen35_4b_api_openai_$(date +%Y%m%d_%H%M%S)"
 VERBOSITY="${VERBOSITY:-DEBUG}"
 
 #GEN ARGS
-MAX_NEW_TOKENS=102400
+MAX_NEW_TOKENS=10240
 
 # ----------------------
 # Check Server Health
@@ -86,12 +86,11 @@ echo ""
 # Run Evaluation
 # ----------------------
 # source /gemini/space/zyf/lmms-eval/.newvenv/bin/activate
-#  --model_args "model_version=${MODEL_VERSION},base_url=${API_BASE},api_key=${API_KEY},fps=2,max_frames=256,num_cpus=4,timeout=600,max_retries=8" \
-
 python -m lmms_eval \
-  --model async_openai \
-  --model_args "model_version=${MODEL_VERSION},base_url=${API_BASE},api_key=${API_KEY},nframes=10,num_cpus=4,timeout=600,max_retries=8" \
-  --gen_kwargs "max_new_tokens=${MAX_NEW_TOKENS},temperature=0" \
+  --model openai \
+  --force_simple \
+  --model_args "model_version=${MODEL_VERSION},base_url=${API_BASE},api_key=${API_KEY}" \
+  --gen_kwargs "max_new_tokens=${MAX_NEW_TOKENS}" \
   --tasks "${TASKS}" \
   --batch_size "${BATCH_SIZE}" \
   ${LIMIT} \

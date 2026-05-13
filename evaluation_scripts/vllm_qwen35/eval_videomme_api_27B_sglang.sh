@@ -25,8 +25,8 @@ set -euo pipefail
 # Configuration
 # ----------------------
 # vllm
-PORT="${1:-5590}"
-HOST="10.233.27.148"
+PORT="${1:-8000}"
+HOST="10.233.21.244"
 API_BASE="http://${HOST}:${PORT}/v1"
 API_KEY="any"  # vLLM doesn't require real API key, but needs a non-empty string
 MODEL_VERSION="Qwen3.5-27B"
@@ -42,7 +42,7 @@ DATASET_PATH="/gemini/space/zyf/datasets/lmms-lab/Video-MME"
 BATCH_SIZE=10
 # LIMIT="${LIMIT:---limit 10}"  # Set LIMIT="--limit 10" for testing
 LIMIT="${LIMIT:---limit 100}"
-OUTPUT_PATH="./logs/qwen35_27b_videomme_api_frames10_100"
+OUTPUT_PATH="./logs/qwen35_27b_videomme_api_frames10_100_sglang"
 LOG_SUFFIX="qwen35_27b_api_102400_$(date +%Y%m%d_%H%M%S)"
 VERBOSITY="${VERBOSITY:-DEBUG}"
 
