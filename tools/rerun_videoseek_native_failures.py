@@ -234,12 +234,13 @@ def rerun_one(target: dict[str, Any], loaded_tasks: dict[str, Any], run_dir: Pat
         "extract_answer": not args.no_extract_answer,
     }
 
+    print(f"[start] task={task_name} doc_id={doc_id} idx={target['index']} reason={target['reason']}", flush=True)
     try:
         result = _run_request_in_subprocess(sample_request, timeout=int(agent_config["timeout"]))
         if result.get("error"):
             raise RuntimeError(result["error"])
         prediction = str(result.get("prediction", "") or "")
-        return {
+        record = {
             "task": task_name,
             "doc_id": doc_id,
             "index": int(target["index"]),
@@ -248,10 +249,16 @@ def rerun_one(target: dict[str, Any], loaded_tasks: dict[str, Any], run_dir: Pat
             "prediction": prediction,
             "reason": target["reason"],
         }
+        print(
+            f"[done] task={task_name} doc_id={doc_id} idx={target['index']} "
+            f"status={record['status']} prediction={prediction[:32]!r}",
+            flush=True,
+        )
+        return record
     except Exception as exc:
         error = str(exc).replace("\n", " ")[:500]
         _write_failure_artifacts(sample_dir, context, error)
-        return {
+        record = {
             "task": task_name,
             "doc_id": doc_id,
             "index": int(target["index"]),
@@ -261,6 +268,12 @@ def rerun_one(target: dict[str, Any], loaded_tasks: dict[str, Any], run_dir: Pat
             "reason": target["reason"],
             "error": error,
         }
+        print(
+            f"[done] task={task_name} doc_id={doc_id} idx={target['index']} "
+            f"status=failed error={error[:160]}",
+            flush=True,
+        )
+        return record
 
 
 def main() -> int:
@@ -323,15 +336,16 @@ def main() -> int:
     report: list[dict[str, Any]] = []
     max_workers = max(1, int(args.workers))
     if max_workers == 1:
-        for target in targets:
+        for completed, target in enumerate(targets, start=1):
             report.append(rerun_one(target, loaded_tasks, run_dir, agent_config, args))
+            print(f"[progress] completed={completed}/{len(targets)}", flush=True)
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
                 executor.submit(rerun_one, target, loaded_tasks, run_dir, agent_config, args): target
                 for target in targets
             }
-            for future in as_completed(future_map):
+            for completed, future in enumerate(as_completed(future_map), start=1):
                 target = future_map[future]
                 try:
                     report.append(future.result())
@@ -352,6 +366,7 @@ def main() -> int:
                             "error": error,
                         }
                     )
+                print(f"[progress] completed={completed}/{len(targets)}", flush=True)
 
     rebuild_run_summary(run_dir)
 
