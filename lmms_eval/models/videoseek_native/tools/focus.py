@@ -65,7 +65,7 @@ def execute_focus(config: dict, parameters: dict) -> str:
                 "Video Subtitles:\n"
                 f"{subtitles_str}\n\n"
                 f"Question:\n{query}\n\n"
-                "Please answer the question based on the given video clip. "
+                "Please answer the question based on the given video clip in at most 80 words. "
                 "If the clip is not related to the question, please return 'No relevant content found.'"
             ),
         }
@@ -88,7 +88,7 @@ def execute_focus(config: dict, parameters: dict) -> str:
             api_key=config["api_key"],
             api_version=config["api_version"],
             max_tokens=config["max_tokens"],
-            reasoning_effort=config["reasoning_effort"],
+            reasoning_effort=config.get("tool_reasoning_effort", "none"),
             seed=config["seed"],
             temperature=config["temperature"],
             timeout=config.get("timeout", 900),

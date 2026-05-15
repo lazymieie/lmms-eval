@@ -4,11 +4,15 @@ api_key: "OPENAI_API_KEY"
 api_version: "OPENAI_API_VERSION"
 
 reasoning_effort: "medium"
+tool_reasoning_effort: "none"
 seed: 42
 temperature: 1.0
 max_steps: 20
 max_retries: 8
 max_tokens: 32768
+observation_max_chars: 1600
+decision_retry_attempts: 3
+decision_retry_backoff_s: 1.0
 
 frame_sampling_factor: 4
 overview_base: 16

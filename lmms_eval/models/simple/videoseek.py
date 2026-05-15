@@ -105,27 +105,65 @@ def _write_run_artifacts(output_dir: Path, question: str, prediction: str, traje
     return {"usage_summary": usage_summary, "frame_summary": frame_summary}
 
 
-def _write_failure_artifacts(output_dir: Path, question: str, error: str, recorder: dict | None = None) -> dict:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    recorder = recorder or {"llm_calls": [], "frame_calls": []}
-    usage_summary = _build_usage_summary(recorder)
-    frame_summary = _build_frame_summary(recorder)
-    _write_json(output_dir / "prediction.json", {"prediction": "", "error": error})
-    _write_json(
-        output_dir / "trajectory.json",
-        {
+def _build_partial_trajectory_payload(agent, question: str, error: str) -> dict:
+    if agent is None:
+        return {
             "question": question,
             "steps": [],
             "total_steps": 0,
             "final_answer": "",
             "finish_reason": "error",
             "error": error,
-            "llm_calls": recorder.get("llm_calls", []),
-            "tool_frame_calls": recorder.get("frame_calls", []),
-            "usage_summary": usage_summary,
-            "frame_summary": frame_summary,
+        }
+
+    try:
+        steps = [step.to_dict() for step in getattr(agent, "trajectory_steps", [])]
+    except Exception:
+        steps = []
+
+    messages = getattr(agent, "messages", []) or []
+    return {
+        "question": getattr(agent, "question", None) or question,
+        "steps": steps,
+        "total_steps": max((step.get("step_id", 0) for step in steps), default=0),
+        "final_answer": str(getattr(agent, "final_answer", "") or ""),
+        "finish_reason": "error",
+        "error": error,
+        "message_count": len(messages),
+        "messages": messages,
+    }
+
+
+def _write_failure_artifacts(
+    output_dir: Path,
+    question: str,
+    error: str,
+    recorder: dict | None = None,
+    trajectory_payload: dict | None = None,
+) -> dict:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    recorder = recorder or {"llm_calls": [], "frame_calls": []}
+    usage_summary = _build_usage_summary(recorder)
+    frame_summary = _build_frame_summary(recorder)
+    trajectory_payload = dict(trajectory_payload or {})
+    trajectory_payload.setdefault("question", question)
+    trajectory_payload.setdefault("steps", [])
+    trajectory_payload.setdefault("total_steps", 0)
+    trajectory_payload.setdefault("final_answer", "")
+    trajectory_payload["finish_reason"] = trajectory_payload.get("finish_reason", "error")
+    trajectory_payload["error"] = error
+    trajectory_payload["llm_calls"] = recorder.get("llm_calls", [])
+    trajectory_payload["tool_frame_calls"] = recorder.get("frame_calls", [])
+    trajectory_payload["usage_summary"] = usage_summary
+    trajectory_payload["frame_summary"] = frame_summary
+    _write_json(
+        output_dir / "prediction.json",
+        {
+            "prediction": trajectory_payload.get("final_answer", "") or "",
+            "error": error,
         },
     )
+    _write_json(output_dir / "trajectory.json", trajectory_payload)
     _write_json(
         output_dir / "metrics.json",
         {
@@ -143,6 +181,7 @@ def _native_videoseek_sample_main(sample_request: dict, result_queue) -> None:
     recorder = {"llm_calls": [], "frame_calls": [], "video_path": sample_request["video_path"]}
     output_dir = Path(sample_request["output_dir"])
     question = sample_request["question"]
+    agent = None
 
     from lmms_eval.models.videoseek_native.agent import VideoSeekAgent
     from lmms_eval.models.videoseek_native.config import build_agent_config
@@ -168,7 +207,8 @@ def _native_videoseek_sample_main(sample_request: dict, result_queue) -> None:
         result_queue.put({"prediction": prediction, "metrics": metrics})
     except Exception as exc:
         error = str(exc).replace("\n", " ")[:500]
-        metrics = _write_failure_artifacts(output_dir, question, error, recorder)
+        partial_trajectory = _build_partial_trajectory_payload(agent, question, error)
+        metrics = _write_failure_artifacts(output_dir, question, error, recorder, trajectory_payload=partial_trajectory)
         result_queue.put({"prediction": "", "metrics": metrics, "error": error})
     finally:
         set_call_label(None)

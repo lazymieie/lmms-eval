@@ -71,7 +71,7 @@ def execute_overview(config: dict, parameters: dict) -> str:
             "text": (
                 "Video Subtitles:\n"
                 f"{subtitles_str}\n\n"
-                "Please generate descriptions for each frame in the video. The descriptions should be concise and detailed (~50 words each).\n"
+                "Please generate concise descriptions for each frame in the video (prefer 12-20 words each).\n"
                 f"Ensure every timestamp value exactly matches a timestamp from the provided timestamp matrices (same values and formatting): [{cur_timestamps_str}].\n"
                 "Return ONLY valid JSON. Use this exact schema:\n"
                 "{\"frames\": [{\"timestamp\": \"1.0s\", \"description\": \"FRAME_DESCRIPTION_1\"}, ...]}\n"
@@ -87,7 +87,7 @@ def execute_overview(config: dict, parameters: dict) -> str:
             api_key=config["api_key"],
             api_version=config["api_version"],
             max_tokens=config["max_tokens"],
-            reasoning_effort=config["reasoning_effort"],
+            reasoning_effort=config.get("tool_reasoning_effort", "none"),
             seed=config["seed"],
             temperature=config["temperature"],
             return_json=True,

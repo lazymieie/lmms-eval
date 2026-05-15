@@ -1,4 +1,5 @@
 import json
+import time
 from abc import ABC, abstractmethod
 from typing import List
 
@@ -57,6 +58,9 @@ class VideoSeekAgent(BaseAgent):
         self.api_version = config["api_version"]
         self.max_steps = config["max_steps"]
         self.max_tokens = config["max_tokens"]
+        self.observation_max_chars = max(256, int(config.get("observation_max_chars", 1600)))
+        self.decision_retry_attempts = max(1, int(config.get("decision_retry_attempts", 3)))
+        self.decision_retry_backoff_s = max(0.0, float(config.get("decision_retry_backoff_s", 1.0)))
         self.reasoning_effort = config["reasoning_effort"]
         self.seed = config["seed"]
         self.temperature = config["temperature"]
@@ -121,6 +125,95 @@ class VideoSeekAgent(BaseAgent):
             return outcome
         raise ValueError(f"Invalid function name: {function_name}")
 
+    def _compact_observation_for_history(self, action: Action, outcome: str) -> str:
+        text = str(outcome or "").strip()
+        if not text:
+            return "No observation returned."
+        if len(text) <= self.observation_max_chars:
+            return text
+        head_budget = max(256, self.observation_max_chars // 2)
+        tail_budget = max(128, self.observation_max_chars - head_budget - 64)
+        compacted = (
+            text[:head_budget].rstrip()
+            + "\n\n[Observation truncated for history to control context length]\n\n"
+            + text[-tail_budget:].lstrip()
+        )
+        return compacted
+
+    @staticmethod
+    def _is_tool_call_json_error(exc: Exception) -> bool:
+        error_text = str(exc)
+        return (
+            "Invalid JSON" in error_text
+            and "EOF while parsing a list" in error_text
+            or "json_invalid" in error_text
+            or "tool_calls" in error_text and "validation error" in error_text
+        )
+
+    def _call_final_answer(self, question: str, finish_reason: str) -> Trajectory:
+        self.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "You have reached the final answer stage. "
+                    f"Question:\n{question}\n\n"
+                    "If the question is a multiple-choice question, directly answer with only the option letter from the given choices."
+                ),
+            }
+        )
+        with call_label("final_answer_fallback"):
+            response = call_llm_api(
+                messages=self.messages,
+                model_name=self.model_name,
+                api_base=self.api_base,
+                api_key=self.api_key,
+                api_version=self.api_version,
+                max_tokens=self.max_tokens,
+                reasoning_effort=self.reasoning_effort,
+                seed=self.seed,
+                temperature=self.temperature,
+                timeout=self.timeout,
+            )
+        self.final_answer = str(response.choices[0].message.content or "")
+        self.messages.append({"role": "assistant", "content": self.final_answer})
+        return Trajectory(question=question, steps=self.trajectory_steps, final_answer=self.final_answer, finish_reason=finish_reason)
+
+    def _call_decision(self, step: int):
+        last_error = None
+        for attempt in range(1, self.decision_retry_attempts + 1):
+            try:
+                with call_label("decision"):
+                    return call_llm_api(
+                        messages=self.messages,
+                        model_name=self.model_name,
+                        api_base=self.api_base,
+                        api_key=self.api_key,
+                        api_version=self.api_version,
+                        max_tokens=self.max_tokens,
+                        reasoning_effort=self.reasoning_effort,
+                        seed=self.seed,
+                        tools=self.tools,
+                        tool_choice="required",
+                        temperature=self.temperature,
+                        timeout=self.timeout,
+                    )
+            except Exception as exc:
+                last_error = exc
+                if not self._is_tool_call_json_error(exc) or attempt >= self.decision_retry_attempts:
+                    break
+                self.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Your previous tool-calling response for step {step + 1} was malformed. "
+                            "Return exactly one valid tool call. Keep arguments minimal and do not include extra narration."
+                        ),
+                    }
+                )
+                if self.decision_retry_backoff_s > 0:
+                    time.sleep(self.decision_retry_backoff_s * attempt)
+        raise last_error
+
     def run(self, question: str) -> Trajectory:
         self.reset()
         self.question = question
@@ -150,21 +243,19 @@ class VideoSeekAgent(BaseAgent):
                 }
             )
 
-            with call_label("decision"):
-                response = call_llm_api(
-                    messages=self.messages,
-                    model_name=self.model_name,
-                    api_base=self.api_base,
-                    api_key=self.api_key,
-                    api_version=self.api_version,
-                    max_tokens=self.max_tokens,
-                    reasoning_effort=self.reasoning_effort,
-                    seed=self.seed,
-                    tools=self.tools,
-                    tool_choice="required",
-                    temperature=self.temperature,
-                    timeout=self.timeout,
+            try:
+                response = self._call_decision(step)
+            except Exception as exc:
+                self.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Tool-calling failed repeatedly. "
+                            "Use the evidence already collected and provide the final answer directly."
+                        ),
+                    }
                 )
+                return self._call_final_answer(question, finish_reason=f"decision_error_fallback: {exc}")
 
             message = response.choices[0].message if response is not None and getattr(response, "choices", None) else None
             visible_content = str(getattr(message, "content", "") or "")
@@ -215,36 +306,11 @@ class VideoSeekAgent(BaseAgent):
                     {
                         "role": "tool",
                         "tool_call_id": action.function_id or action.function_name,
-                        "content": f"Observation from `{str(logged_action.to_dict())}`:\n{outcome}",
+                        "content": f"Observation from `{str(logged_action.to_dict())}`:\n{self._compact_observation_for_history(logged_action, outcome)}",
                     }
                 )
 
             if self.final_answer is not None:
                 return Trajectory(question=question, steps=self.trajectory_steps, final_answer=self.final_answer, finish_reason="stop")
 
-        self.messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "You have reached the maximum number of steps. "
-                    f"Question:\n{question}\n\n"
-                    "If the question is a multiple-choice question, please directly answer with the option's letter from the given choices without any additional text."
-                ),
-            }
-        )
-        with call_label("final_answer_fallback"):
-            response = call_llm_api(
-                messages=self.messages,
-                model_name=self.model_name,
-                api_base=self.api_base,
-                api_key=self.api_key,
-                api_version=self.api_version,
-                max_tokens=self.max_tokens,
-                reasoning_effort=self.reasoning_effort,
-                seed=self.seed,
-                temperature=self.temperature,
-                timeout=self.timeout,
-            )
-        self.final_answer = str(response.choices[0].message.content or "")
-        self.messages.append({"role": "assistant", "content": self.final_answer})
-        return Trajectory(question=question, steps=self.trajectory_steps, final_answer=self.final_answer, finish_reason="reach_max_steps")
+        return self._call_final_answer(question, finish_reason="reach_max_steps")

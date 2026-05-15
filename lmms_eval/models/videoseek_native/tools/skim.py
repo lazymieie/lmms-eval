@@ -74,8 +74,8 @@ def execute_skim(config: dict, parameters: dict) -> str:
             "text": (
                 f"Video Subtitles:\n{subtitles_str}\n\n"
                 f"Question:\n{query}\n\n"
-                "Please describe the content of the viewed video frames in detail with their timestamps (each frame with ~25 words). "
-                "If query related content is found, please highlight the timestamps of the video frames that are relevant to the question and explain why (each timestamp with additional ~50 words). "
+                "Please briefly describe the viewed video frames with their timestamps (prefer 8-15 words per frame). "
+                "If query related content is found, highlight only the relevant timestamps and explain why concisely (prefer <=25 words per relevant timestamp). "
                 "Do not answer the question directly."
             ),
         }
@@ -98,7 +98,7 @@ def execute_skim(config: dict, parameters: dict) -> str:
             api_key=config["api_key"],
             api_version=config["api_version"],
             max_tokens=config["max_tokens"],
-            reasoning_effort="low",
+            reasoning_effort=config.get("tool_reasoning_effort", "none"),
             seed=config["seed"],
             temperature=config["temperature"],
             timeout=config.get("timeout", 900),

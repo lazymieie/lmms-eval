@@ -54,31 +54,28 @@ def parse_sample_dir_name(path: Path) -> dict[str, Any] | None:
 
 
 def discover_samples(run_dir: Path) -> list[dict[str, Any]]:
+    by_key: dict[tuple[str, int, int], dict[str, Any]] = {}
+
     run_summary_path = run_dir / "run_summary.json"
     if run_summary_path.is_file():
         payload = load_json(run_summary_path)
         samples = payload.get("samples", [])
-        normalized = []
         for sample in samples:
-            normalized.append(
-                {
-                    "task": str(sample["task"]),
-                    "doc_id": int(sample["doc_id"]),
-                    "index": int(sample["index"]),
-                    "sample_dir": str(sample["sample_dir"]),
-                }
-            )
-        if normalized:
-            return normalized
+            normalized = {
+                "task": str(sample["task"]),
+                "doc_id": int(sample["doc_id"]),
+                "index": int(sample["index"]),
+                "sample_dir": str(sample["sample_dir"]),
+            }
+            by_key[(normalized["task"], normalized["doc_id"], normalized["index"])] = normalized
 
-    samples = []
     for child in sorted(run_dir.iterdir()):
         if not child.is_dir():
             continue
         parsed = parse_sample_dir_name(child)
         if parsed is not None:
-            samples.append(parsed)
-    return samples
+            by_key[(parsed["task"], parsed["doc_id"], parsed["index"])] = parsed
+    return sorted(by_key.values(), key=lambda item: (item["task"], item["doc_id"], item["index"]))
 
 
 def load_task_docs(task_names: list[str], split: str) -> dict[str, Any]:

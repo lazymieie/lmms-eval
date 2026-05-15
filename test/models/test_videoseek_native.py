@@ -104,6 +104,39 @@ def test_timeout_failure_writes_artifacts(monkeypatch, tmp_path):
     assert metrics["usage_summary"]["num_llm_calls"] == 0
 
 
+def test_failure_artifacts_preserve_partial_trajectory(tmp_path):
+    class _FakeAgent:
+        question = "question"
+        final_answer = ""
+        messages = [{"role": "system", "content": "system"}, {"role": "user", "content": "q"}]
+        trajectory_steps = [
+            types.SimpleNamespace(
+                to_dict=lambda: {
+                    "step_id": 1,
+                    "thought": "thought",
+                    "action": {"function": "overview", "parameters": {}, "id": "call-1"},
+                    "observation": "obs",
+                }
+            )
+        ]
+
+    payload = videoseek_module._build_partial_trajectory_payload(_FakeAgent(), "question", "boom")
+    videoseek_module._write_failure_artifacts(
+        tmp_path,
+        "question",
+        "boom",
+        recorder={"llm_calls": [{"call_index": 1}], "frame_calls": []},
+        trajectory_payload=payload,
+    )
+
+    trajectory = json.loads((tmp_path / "trajectory.json").read_text(encoding="utf-8"))
+    prediction = json.loads((tmp_path / "prediction.json").read_text(encoding="utf-8"))
+    assert trajectory["total_steps"] == 1
+    assert trajectory["messages"][0]["role"] == "system"
+    assert trajectory["error"] == "boom"
+    assert prediction["error"] == "boom"
+
+
 def test_parse_actions_handles_valid_and_bad_json(monkeypatch):
     monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
@@ -144,3 +177,99 @@ def test_parse_actions_handles_valid_and_bad_json(monkeypatch):
                 }
             ]
         )
+
+
+def test_observation_history_is_compacted(monkeypatch):
+    monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.agent",
+        "lmms_eval.models.videoseek_native.tools",
+        "lmms_eval.models.videoseek_native.tools.answer",
+        "lmms_eval.models.videoseek_native.tools.focus",
+        "lmms_eval.models.videoseek_native.tools.overview",
+        "lmms_eval.models.videoseek_native.tools.skim",
+        "lmms_eval.models.videoseek_native.utils",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    agent_module = importlib.import_module("lmms_eval.models.videoseek_native.agent")
+
+    agent = agent_module.VideoSeekAgent.__new__(agent_module.VideoSeekAgent)
+    agent.observation_max_chars = 64
+    compacted = agent._compact_observation_for_history(types.SimpleNamespace(function_name="overview"), "x" * 400)
+    assert "[Observation truncated for history" in compacted
+    assert len(compacted) > 64
+
+
+def test_decision_json_error_falls_back_to_final_answer(monkeypatch):
+    monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.agent",
+        "lmms_eval.models.videoseek_native.tools",
+        "lmms_eval.models.videoseek_native.tools.answer",
+        "lmms_eval.models.videoseek_native.tools.focus",
+        "lmms_eval.models.videoseek_native.tools.overview",
+        "lmms_eval.models.videoseek_native.tools.skim",
+        "lmms_eval.models.videoseek_native.utils",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    agent_module = importlib.import_module("lmms_eval.models.videoseek_native.agent")
+
+    class _DummyVideoReader:
+        def __len__(self):
+            return 10
+
+        def get_avg_fps(self):
+            return 1.0
+
+    monkeypatch.setattr(agent_module, "VideoReader", lambda _path: _DummyVideoReader())
+    monkeypatch.setattr(agent_module, "load_subtitles", lambda _path: [])
+
+    call_count = {"value": 0}
+
+    def fake_call_llm_api(**kwargs):
+        call_count["value"] += 1
+        if kwargs.get("tool_choice") == "required":
+            raise RuntimeError("Invalid JSON: EOF while parsing a list")
+        message = types.SimpleNamespace(content="C")
+        choice = types.SimpleNamespace(message=message)
+        return types.SimpleNamespace(choices=[choice])
+
+    monkeypatch.setattr(agent_module, "call_llm_api", fake_call_llm_api)
+
+    agent = agent_module.VideoSeekAgent(
+        config={
+            "SYSTEM_PROMPT": "system",
+            "frame_sampling_factor": 1,
+            "overview_base": 1,
+            "skim_base": 1,
+            "focus_base": 1,
+            "tools": ["overview"],
+            "model_name": "model",
+            "api_base": "http://localhost",
+            "api_key": "key",
+            "api_version": "",
+            "max_steps": 2,
+            "max_tokens": 1024,
+            "observation_max_chars": 128,
+            "decision_retry_attempts": 2,
+            "decision_retry_backoff_s": 0.0,
+            "reasoning_effort": "none",
+            "seed": 42,
+            "temperature": 0.0,
+            "timeout": 60,
+        },
+        video_path="/tmp/video.mp4",
+        subtitle_path=None,
+        output_dir="/tmp",
+        tools=["overview"],
+        verbose=False,
+    )
+
+    trajectory = agent.run("Question?\nA. a\nB. b\nC. c\nD. d")
+    assert trajectory.final_answer == "C"
+    assert trajectory.finish_reason.startswith("decision_error_fallback")
+    assert call_count["value"] >= 2
