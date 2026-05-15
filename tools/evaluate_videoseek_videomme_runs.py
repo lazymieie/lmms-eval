@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
-"""Evaluate VideoSeek run outputs against VideoMME ground truth.
+"""Score native VideoSeek VideoMME run directories.
 
-The script scans logs/videoseek_runs/videomme_doc{doc_id}_idx{idx}/, selects one
-successful run per doc, extracts the final option letter from prediction.json
-or trajectory.json, and recomputes aggregate accuracy.
+This script targets the native VideoSeek artifact layout produced by
+`lmms_eval.models.simple.videoseek`, for example:
+
+    run_20260513_xxx/
+      run_manifest.json
+      run_summary.json
+      videomme_long_w_subtitle_doc0_idx0/
+        prediction.json
+        trajectory.json
+        metrics.json
+
+It reads the saved per-sample predictions, looks up the corresponding
+VideoMME ground truth via task/doc_id, and writes a score report without
+attempting to repair invalid predictions.
 """
 
 from __future__ import annotations
@@ -14,52 +25,15 @@ import re
 from pathlib import Path
 from typing import Any
 
-
-DEFAULT_RUNS_ROOT = Path("/gemini/space/gjx/lmms-eval/logs/videoseek_runs")
-DEFAULT_SAMPLES_GLOB = "/gemini/space/gjx/lmms-eval/logs/qwen35_397b_videomme_api/*/*samples_videomme.jsonl"
-CHOICES = {"A", "B", "C", "D"}
-
-
-def parse_parent(parent: Path) -> tuple[int, int] | None:
-    match = re.fullmatch(r"videomme_doc(\d+)_idx(\d+)", parent.name)
-    if not match:
-        return None
-    return int(match.group(1)), int(match.group(2))
+from lmms_eval.tasks import TaskManager, get_task_dict
+from lmms_eval.tasks.videomme.utils import (
+    extract_characters_regex,
+    videomme_aggregate_results,
+    videomme_process_results,
+)
 
 
-def has_result(run_dir: Path) -> bool:
-    return (run_dir / "prediction.json").is_file() and (run_dir / "trajectory.json").is_file()
-
-
-def as_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return "\n".join(as_text(item) for item in value)
-    return str(value)
-
-
-def extract_option(text: str) -> str:
-    text = as_text(text).strip()
-    if not text:
-        return ""
-
-    tail = text[-4000:]
-    patterns = [
-        r"(?:final\s+answer|answer|option|choice|therefore|so)\s*(?:is|:)?\s*[\(\[\{]*\s*([A-D])\s*[\)\]\}.]?\s*$",
-        r"答案\s*(?:是|:)?\s*([A-D])\s*$",
-        r"正确答案\s*(?:是|:)?\s*([A-D])\s*$",
-        r"([A-D])\s*$",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, tail, flags=re.IGNORECASE)
-        if match:
-            return match.group(1).upper()
-
-    matches = re.findall(r"(?<![A-Za-z])([A-D])(?![A-Za-z])", tail, flags=re.IGNORECASE)
-    return matches[-1].upper() if matches else ""
+SAMPLE_DIR_PATTERN = re.compile(r"(?P<task>.+)_doc(?P<doc_id>\d+)_idx(?P<idx>\d+)$")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -67,189 +41,178 @@ def load_json(path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
-def load_sample_doc_map(paths: list[Path]) -> dict[int, dict[str, Any]]:
-    docs: dict[int, dict[str, Any]] = {}
-    for path in paths:
-        if not path.exists():
-            continue
-        with path.open("r", encoding="utf-8", errors="ignore") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                try:
-                    sample = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                doc_id = sample.get("doc_id")
-                metric = sample.get("videomme_perception_score") or {}
-                video_id = metric.get("videoID")
-                target = sample.get("target") or metric.get("answer")
-                if isinstance(doc_id, int) and video_id and target:
-                    docs[doc_id] = {
-                        "videoID": video_id,
-                        "target": str(target).strip().upper(),
-                        "input": sample.get("input", ""),
-                        "question_id": metric.get("question_id"),
-                        "duration": metric.get("duration"),
-                        "category": metric.get("category"),
-                        "sub_category": metric.get("sub_category"),
-                        "task_category": metric.get("task_category"),
-                    }
-    return docs
-
-
-def discover_sample_paths(samples_jsonl: list[Path] | None, samples_glob: str | None) -> list[Path]:
-    paths = list(samples_jsonl or [])
-    if not samples_glob:
-        return paths
-    if samples_glob.startswith("/"):
-        paths.extend(sorted(Path("/").glob(samples_glob.lstrip("/"))))
-    else:
-        paths.extend(sorted(Path().glob(samples_glob)))
-    return paths
-
-
-def select_run(parent: Path, mode: str) -> Path | None:
-    children = [child for child in parent.iterdir() if child.is_dir()]
-    if not children:
+def parse_sample_dir_name(path: Path) -> dict[str, Any] | None:
+    match = SAMPLE_DIR_PATTERN.fullmatch(path.name)
+    if match is None:
         return None
-    children.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    if mode == "latest_success":
-        for child in children:
-            if has_result(child):
-                return child
-        return None
-    if mode == "latest_any":
-        return children[0]
-    raise ValueError(f"unsupported selection mode: {mode}")
-
-
-def evaluate_one(doc_id: int, idx: int, parent: Path, run_dir: Path | None, docs: dict[int, dict[str, Any]]) -> dict[str, Any]:
-    doc = docs.get(doc_id, {})
-    record: dict[str, Any] = {
-        "doc_id": doc_id,
-        "idx": idx,
-        "parent_dir": str(parent),
-        "run_dir": str(run_dir) if run_dir else None,
-        "videoID": doc.get("videoID"),
-        "target": doc.get("target", ""),
-        "question_id": doc.get("question_id"),
-        "duration": doc.get("duration"),
-        "category": doc.get("category"),
-        "sub_category": doc.get("sub_category"),
-        "task_category": doc.get("task_category"),
-        "has_result": False,
-        "pred_text": "",
-        "pred_answer": "",
-        "score": 0.0,
+    return {
+        "task": match.group("task"),
+        "doc_id": int(match.group("doc_id")),
+        "index": int(match.group("idx")),
+        "sample_dir": str(path),
     }
-    if run_dir is None or not has_result(run_dir):
-        return record
 
-    prediction = load_json(run_dir / "prediction.json")
-    trajectory = load_json(run_dir / "trajectory.json")
-    pred_text = as_text(prediction.get("prediction")) or as_text(trajectory.get("final_answer"))
-    pred_answer = extract_option(pred_text)
 
-    record.update(
+def discover_samples(run_dir: Path) -> list[dict[str, Any]]:
+    run_summary_path = run_dir / "run_summary.json"
+    if run_summary_path.is_file():
+        payload = load_json(run_summary_path)
+        samples = payload.get("samples", [])
+        normalized = []
+        for sample in samples:
+            normalized.append(
+                {
+                    "task": str(sample["task"]),
+                    "doc_id": int(sample["doc_id"]),
+                    "index": int(sample["index"]),
+                    "sample_dir": str(sample["sample_dir"]),
+                }
+            )
+        if normalized:
+            return normalized
+
+    samples = []
+    for child in sorted(run_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        parsed = parse_sample_dir_name(child)
+        if parsed is not None:
+            samples.append(parsed)
+    return samples
+
+
+def load_task_docs(task_names: list[str], split: str) -> dict[str, Any]:
+    task_manager = TaskManager("WARNING")
+    task_dict = get_task_dict(task_names, task_manager=task_manager)
+    docs_by_task: dict[str, Any] = {}
+    for task_name, task in task_dict.items():
+        if split == "test" and task.has_test_docs():
+            docs_by_task[task_name] = task.test_docs()
+        elif split == "validation" and task.has_validation_docs():
+            docs_by_task[task_name] = task.validation_docs()
+        elif task.has_test_docs():
+            docs_by_task[task_name] = task.test_docs()
+        elif task.has_validation_docs():
+            docs_by_task[task_name] = task.validation_docs()
+        else:
+            raise ValueError(f"Task {task_name} has neither test nor validation docs")
+    return docs_by_task
+
+
+def read_prediction(sample_dir: Path) -> tuple[str, str | None]:
+    prediction_path = sample_dir / "prediction.json"
+    if not prediction_path.is_file():
+        return "", "missing prediction.json"
+    payload = load_json(prediction_path)
+    return str(payload.get("prediction", "") or ""), payload.get("error")
+
+
+def evaluate_sample(sample: dict[str, Any], docs_by_task: dict[str, Any]) -> dict[str, Any]:
+    sample_dir = Path(sample["sample_dir"])
+    task_name = sample["task"]
+    doc_id = int(sample["doc_id"])
+    docs = docs_by_task[task_name]
+    doc = docs[doc_id]
+
+    raw_prediction, prediction_error = read_prediction(sample_dir)
+    metric = videomme_process_results(doc, [raw_prediction])["videomme_perception_score"]
+    trajectory_path = sample_dir / "trajectory.json"
+    finish_reason = None
+    if trajectory_path.is_file():
+        trajectory = load_json(trajectory_path)
+        finish_reason = trajectory.get("finish_reason")
+
+    return {
+        "task": task_name,
+        "doc_id": doc_id,
+        "index": int(sample["index"]),
+        "sample_dir": str(sample_dir),
+        "question_id": metric["question_id"],
+        "videoID": metric["videoID"],
+        "duration": metric["duration"],
+        "category": metric["category"],
+        "sub_category": metric["sub_category"],
+        "task_category": metric["task_category"],
+        "answer": metric["answer"],
+        "raw_prediction": raw_prediction,
+        "pred_answer": metric["pred_answer"],
+        "score": metric["score"],
+        "prediction_error": prediction_error,
+        "finish_reason": finish_reason,
+        "is_valid_choice": metric["pred_answer"] in {"A", "B", "C", "D"},
+    }
+
+
+def summarize(records: list[dict[str, Any]], run_dir: Path) -> dict[str, Any]:
+    metrics = [
         {
-            "has_result": True,
-            "pred_text": pred_text,
-            "pred_answer": pred_answer,
-            "score": 1.0 if pred_answer and pred_answer == record["target"] else 0.0,
-            "finish_reason": trajectory.get("finish_reason"),
-            "total_steps": trajectory.get("total_steps"),
+            "question_id": record["question_id"],
+            "duration": record["duration"],
+            "category": record["category"],
+            "sub_category": record["sub_category"],
+            "task_category": record["task_category"],
+            "pred_answer": record["pred_answer"],
+            "answer": record["answer"],
+            "score": record["score"],
+            "videoID": record["videoID"],
         }
-    )
-    return record
+        for record in records
+    ]
+    overall = videomme_aggregate_results(metrics) if metrics else 0.0
+    invalid_predictions = sum(1 for record in records if not record["is_valid_choice"])
+    correct = sum(int(record["score"]) for record in records)
+    return {
+        "run_dir": str(run_dir),
+        "num_samples": len(records),
+        "correct": correct,
+        "invalid_predictions": invalid_predictions,
+        "overall_score": overall,
+    }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--runs-root", type=Path, default=DEFAULT_RUNS_ROOT)
-    parser.add_argument(
-        "--samples-jsonl",
-        type=Path,
-        action="append",
-        default=None,
-        help="Existing lmms-eval samples JSONL to use for doc_id -> answer mapping. Can be repeated.",
-    )
-    parser.add_argument("--samples-glob", default=DEFAULT_SAMPLES_GLOB)
-    parser.add_argument("--select-run", choices=["latest_success", "latest_any"], default="latest_success")
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--doc-id", type=int, action="append", default=None)
-    parser.add_argument("--output-jsonl", type=Path, default=Path("logs/videoseek_videomme_eval.jsonl"))
-    parser.add_argument("--summary-json", type=Path, default=Path("logs/videoseek_videomme_eval_summary.json"))
+    parser.add_argument("run_dir", type=Path, help="Path to one VideoSeek run_<timestamp> directory")
+    parser.add_argument("--split", default="test", choices=["test", "validation"])
+    parser.add_argument("--output-jsonl", type=Path, default=None, help="Per-sample score report path")
+    parser.add_argument("--summary-json", type=Path, default=None, help="Aggregate score report path")
     args = parser.parse_args()
 
-    sample_paths = discover_sample_paths(args.samples_jsonl, args.samples_glob)
-    docs = load_sample_doc_map(sample_paths)
-    if not docs:
-        raise SystemExit("No doc mapping loaded from samples JSONL. Pass --samples-jsonl explicitly.")
+    run_dir = args.run_dir.expanduser().resolve()
+    if not run_dir.is_dir():
+        raise SystemExit(f"Run directory not found: {run_dir}")
 
-    rows: list[tuple[int, int, Path]] = []
-    for parent in sorted(args.runs_root.glob("videomme_doc*_idx*")):
-        parsed = parse_parent(parent)
-        if parsed is None or not parent.is_dir():
-            continue
-        doc_id, idx = parsed
-        if doc_id not in docs:
-            continue
-        rows.append((doc_id, idx, parent))
+    samples = discover_samples(run_dir)
+    if not samples:
+        raise SystemExit(f"No sample directories found under: {run_dir}")
 
-    if args.doc_id is not None:
-        wanted = set(args.doc_id)
-        rows = [row for row in rows if row[0] in wanted]
-    if args.limit is not None:
-        rows = rows[: args.limit]
+    task_names = sorted({sample["task"] for sample in samples})
+    docs_by_task = load_task_docs(task_names, split=args.split)
+    records = [evaluate_sample(sample, docs_by_task) for sample in samples]
+    records.sort(key=lambda item: (item["task"], item["doc_id"], item["index"]))
 
-    args.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
-    args.summary_json.parent.mkdir(parents=True, exist_ok=True)
+    default_prefix = run_dir / "videomme_scores"
+    output_jsonl = args.output_jsonl or default_prefix.with_suffix(".jsonl")
+    summary_json = args.summary_json or default_prefix.with_name(default_prefix.name + "_summary.json")
+    output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+    summary_json.parent.mkdir(parents=True, exist_ok=True)
 
-    results: list[dict[str, Any]] = []
-    for doc_id, idx, parent in rows:
-        run_dir = select_run(parent, args.select_run)
-        results.append(evaluate_one(doc_id, idx, parent, run_dir, docs))
-
-    with args.output_jsonl.open("w", encoding="utf-8") as handle:
-        for record in results:
+    with output_jsonl.open("w", encoding="utf-8") as handle:
+        for record in records:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    total_docs = len(results)
-    answered_docs = sum(1 for record in results if record["has_result"])
-    missing_docs = total_docs - answered_docs
-    valid_preds = sum(1 for record in results if record["pred_answer"] in CHOICES)
-    correct = sum(int(record["score"]) for record in results)
-    accuracy_total = (correct / total_docs) if total_docs else 0.0
-    accuracy_answered = (correct / answered_docs) if answered_docs else 0.0
-    accuracy_valid = (correct / valid_preds) if valid_preds else 0.0
-
-    summary = {
-        "runs_root": str(args.runs_root),
-        "select_run": args.select_run,
-        "total_docs": total_docs,
-        "answered_docs": answered_docs,
-        "missing_docs": missing_docs,
-        "valid_preds": valid_preds,
-        "correct": correct,
-        "accuracy_total": accuracy_total,
-        "accuracy_answered": accuracy_answered,
-        "accuracy_valid": accuracy_valid,
-        "output_jsonl": str(args.output_jsonl),
-    }
-    with args.summary_json.open("w", encoding="utf-8") as handle:
+    summary = summarize(records, run_dir)
+    summary["output_jsonl"] = str(output_jsonl)
+    with summary_json.open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, ensure_ascii=False, indent=2)
 
-    print(f"output_jsonl: {args.output_jsonl}")
-    print(f"summary_json: {args.summary_json}")
-    print(f"total_docs: {total_docs}")
-    print(f"answered_docs: {answered_docs}")
-    print(f"missing_docs: {missing_docs}")
-    print(f"valid_preds: {valid_preds}")
-    print(f"correct: {correct}")
-    print(f"accuracy_total: {accuracy_total:.6f}")
-    print(f"accuracy_answered: {accuracy_answered:.6f}")
-    print(f"accuracy_valid: {accuracy_valid:.6f}")
+    print(f"run_dir: {run_dir}")
+    print(f"samples: {summary['num_samples']}")
+    print(f"correct: {summary['correct']}")
+    print(f"invalid_predictions: {summary['invalid_predictions']}")
+    print(f"overall_score: {summary['overall_score']:.4f}")
+    print(f"output_jsonl: {output_jsonl}")
+    print(f"summary_json: {summary_json}")
     return 0
 
 
