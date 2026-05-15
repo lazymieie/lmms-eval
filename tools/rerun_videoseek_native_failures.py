@@ -17,6 +17,7 @@ import argparse
 import json
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -278,6 +279,7 @@ def main() -> int:
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--timeout", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--workers", type=int, default=1, help="Number of samples to rerun concurrently")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--no-extract-answer", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -311,6 +313,7 @@ def main() -> int:
     print(f"tasks: {', '.join(task_names)}")
     print(f"existing_samples: {len(existing)}")
     print(f"rerun_targets: {len(targets)}")
+    print(f"workers: {max(1, args.workers)}")
     for target in targets[:20]:
         print(f"  task={target['task']} doc_id={target['doc_id']} idx={target['index']} reason={target['reason']}")
     if args.dry_run:
@@ -318,8 +321,37 @@ def main() -> int:
 
     agent_config = build_agent_config(manifest, args)
     report: list[dict[str, Any]] = []
-    for target in targets:
-        report.append(rerun_one(target, loaded_tasks, run_dir, agent_config, args))
+    max_workers = max(1, int(args.workers))
+    if max_workers == 1:
+        for target in targets:
+            report.append(rerun_one(target, loaded_tasks, run_dir, agent_config, args))
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(rerun_one, target, loaded_tasks, run_dir, agent_config, args): target
+                for target in targets
+            }
+            for future in as_completed(future_map):
+                target = future_map[future]
+                try:
+                    report.append(future.result())
+                except Exception as exc:
+                    sample_dir = Path(target["sample_dir"])
+                    sample_dir.mkdir(parents=True, exist_ok=True)
+                    error = str(exc).replace("\n", " ")[:500]
+                    _write_failure_artifacts(sample_dir, f"doc_id={target['doc_id']}", error)
+                    report.append(
+                        {
+                            "task": target["task"],
+                            "doc_id": int(target["doc_id"]),
+                            "index": int(target["index"]),
+                            "sample_dir": str(sample_dir),
+                            "status": "failed",
+                            "prediction": "",
+                            "reason": target["reason"],
+                            "error": error,
+                        }
+                    )
 
     rebuild_run_summary(run_dir)
 
