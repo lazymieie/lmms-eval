@@ -277,3 +277,72 @@ def test_decision_json_error_falls_back_to_final_answer(monkeypatch, tmp_path):
     assert len(debug_lines) == 2
     detail = json.loads((tmp_path / "decision_error_step1_attempt1.json").read_text(encoding="utf-8"))
     assert detail["likely_cause"] == "likely_incomplete_tool_call_json"
+
+
+def test_question_with_embedded_subtitles_skips_agent_subtitle_injection(monkeypatch):
+    monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.agent",
+        "lmms_eval.models.videoseek_native.tools",
+        "lmms_eval.models.videoseek_native.tools.answer",
+        "lmms_eval.models.videoseek_native.tools.focus",
+        "lmms_eval.models.videoseek_native.tools.overview",
+        "lmms_eval.models.videoseek_native.tools.skim",
+        "lmms_eval.models.videoseek_native.utils",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    agent_module = importlib.import_module("lmms_eval.models.videoseek_native.agent")
+
+    class _DummyVideoReader:
+        def __len__(self):
+            return 10
+
+        def get_avg_fps(self):
+            return 1.0
+
+    monkeypatch.setattr(agent_module, "VideoReader", lambda _path: _DummyVideoReader())
+    monkeypatch.setattr(agent_module, "load_subtitles", lambda _path: [{"start_time": 0.0, "end_time": 1.0, "subtitle": "duplicate"}])
+
+    agent = agent_module.VideoSeekAgent(
+        config={
+            "SYSTEM_PROMPT": "system",
+            "frame_sampling_factor": 1,
+            "overview_base": 1,
+            "skim_base": 1,
+            "focus_base": 1,
+            "tools": ["overview"],
+            "model_name": "model",
+            "api_base": "http://localhost",
+            "api_key": "key",
+            "api_version": "",
+            "max_steps": 1,
+            "max_tokens": 1024,
+            "observation_max_chars": 128,
+            "decision_retry_attempts": 1,
+            "decision_retry_backoff_s": 0.0,
+            "reasoning_effort": "none",
+            "seed": 42,
+            "temperature": 0.0,
+            "timeout": 60,
+        },
+        video_path="/tmp/video.mp4",
+        subtitle_path=None,
+        output_dir="/tmp",
+        tools=["overview"],
+        verbose=False,
+    )
+
+    monkeypatch.setattr(agent, "_call_decision", lambda _step: (_ for _ in ()).throw(RuntimeError("stop here")))
+    monkeypatch.setattr(
+        agent,
+        "_call_final_answer",
+        lambda question, finish_reason: agent_module.Trajectory(question=question, steps=[], final_answer="C", finish_reason=finish_reason),
+    )
+
+    question = "This video's subtitles are listed below: \nfoo\nQuestion body"
+    agent.run(question)
+    user_content = agent.messages[1]["content"]
+    assert "Question:\nThis video's subtitles are listed below:" in user_content
+    assert "Video Subtitles:\n" not in user_content

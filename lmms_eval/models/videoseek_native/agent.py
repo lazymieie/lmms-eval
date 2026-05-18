@@ -112,6 +112,11 @@ class VideoSeekAgent(BaseAgent):
             actions.pop(answer_call_idx)
         return actions
 
+    @staticmethod
+    def _question_already_contains_subtitles(question: str) -> bool:
+        normalized = str(question or "").lower()
+        return "this video's subtitles are listed below:" in normalized
+
     def _exec_action(self, action: Action) -> str:
         function_name = getattr(action, "function_name", None) if action else None
         parameters = getattr(action, "parameters", {}) if action else {}
@@ -292,17 +297,16 @@ class VideoSeekAgent(BaseAgent):
         self.reset()
         self.question = question
         subtitles_str = convert_to_free_form_text_representation(self.subtitles, content_type="subtitle")
+        if self._question_already_contains_subtitles(question):
+            initial_user_content = f"Video Duration: {self.duration:.01f}s\n\nQuestion:\n{question}"
+        else:
+            initial_user_content = (
+                f"Video Duration: {self.duration:.01f}s\n\n"
+                f"Video Subtitles:\n{subtitles_str}\n\n"
+                f"Question:\n{question}"
+            )
 
-        self.messages.append(
-            {
-                "role": "user",
-                "content": (
-                    f"Video Duration: {self.duration:.01f}s\n\n"
-                    f"Video Subtitles:\n{subtitles_str}\n\n"
-                    f"Question:\n{question}"
-                ),
-            }
-        )
+        self.messages.append({"role": "user", "content": initial_user_content})
 
         for step in range(self.max_steps):
             self.messages.append(
