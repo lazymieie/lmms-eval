@@ -181,7 +181,6 @@ def _native_videoseek_sample_main(sample_request: dict, result_queue) -> None:
         agent = VideoSeekAgent(
             config=config,
             video_path=sample_request["video_path"],
-            subtitle_path=sample_request["subtitle_path"],
             output_dir=str(output_dir),
             tools=config["tools"],
             verbose=sample_request["verbose"],
@@ -369,7 +368,6 @@ class VideoSeek(lmms):
             total_attempts = 1 + self.sample_retry_attempts
             sample_request = {
                 "video_path": video_path,
-                "subtitle_path": None,
                 "question": context,
                 "output_dir": str(output_dir),
                 "config": self._build_agent_config(),

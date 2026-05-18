@@ -80,7 +80,7 @@ def test_generate_until_preserves_order_and_writes_summary(monkeypatch, tmp_path
     assert [sample["prediction"] for sample in summary["samples"]] == ["0", "1"]
 
 
-def test_videoseek_does_not_pass_subtitle_path_from_backend(monkeypatch, tmp_path):
+def test_videoseek_backend_does_not_manage_subtitles(monkeypatch, tmp_path):
     captured = []
 
     def fake_run_request(sample_request, timeout, target=videoseek_module._native_videoseek_sample_main):
@@ -115,8 +115,8 @@ def test_videoseek_does_not_pass_subtitle_path_from_backend(monkeypatch, tmp_pat
     outputs = model.generate_until([req_no_sub, req_with_sub])
 
     assert outputs == ["A", "A"]
-    assert captured[0]["subtitle_path"] is None
-    assert captured[1]["subtitle_path"] is None
+    assert "subtitle_path" not in captured[0]
+    assert "subtitle_path" not in captured[1]
 
 
 def test_timeout_failure_writes_artifacts(monkeypatch, tmp_path):
@@ -265,8 +265,6 @@ def test_decision_json_error_falls_back_to_final_answer(monkeypatch, tmp_path):
             return 1.0
 
     monkeypatch.setattr(agent_module, "VideoReader", lambda _path: _DummyVideoReader())
-    monkeypatch.setattr(agent_module, "load_subtitles", lambda _path: [])
-
     call_count = {"value": 0}
 
     def fake_call_llm_api(**kwargs):
@@ -302,7 +300,6 @@ def test_decision_json_error_falls_back_to_final_answer(monkeypatch, tmp_path):
             "timeout": 60,
         },
         video_path="/tmp/video.mp4",
-        subtitle_path=None,
         output_dir=str(tmp_path),
         tools=["overview"],
         verbose=False,
@@ -342,7 +339,110 @@ def test_agent_initial_prompt_never_injects_subtitles(monkeypatch):
             return 1.0
 
     monkeypatch.setattr(agent_module, "VideoReader", lambda _path: _DummyVideoReader())
-    monkeypatch.setattr(agent_module, "load_subtitles", lambda _path: [{"start_time": 0.0, "end_time": 1.0, "subtitle": "duplicate"}])
+    agent = agent_module.VideoSeekAgent(
+        config={
+            "SYSTEM_PROMPT": "system",
+            "frame_sampling_factor": 1,
+            "overview_base": 1,
+            "skim_base": 1,
+            "focus_base": 1,
+            "tools": ["overview"],
+            "model_name": "model",
+            "api_base": "http://localhost",
+            "api_key": "key",
+            "api_version": "",
+            "max_steps": 1,
+            "max_tokens": 1024,
+            "observation_max_chars": 128,
+            "decision_retry_attempts": 1,
+            "decision_retry_backoff_s": 0.0,
+            "reasoning_effort": "none",
+            "seed": 42,
+            "temperature": 0.0,
+            "timeout": 60,
+        },
+        video_path="/tmp/video.mp4",
+        output_dir="/tmp",
+        tools=["overview"],
+        verbose=False,
+    )
+
+    monkeypatch.setattr(agent, "_call_decision", lambda _step: (_ for _ in ()).throw(RuntimeError("stop here")))
+    monkeypatch.setattr(
+        agent,
+        "_call_final_answer",
+        lambda question, finish_reason: agent_module.Trajectory(question=question, steps=[], final_answer="C", finish_reason=finish_reason),
+    )
+
+    question = "This video's subtitles are listed below: \nfoo\nQuestion body"
+    agent.run(question)
+    user_content = agent.messages[1]["content"]
+    assert "Question:\nThis video's subtitles are listed below:" in user_content
+    assert "Video Subtitles:\n" not in user_content
+
+
+def test_extract_subtitles_from_task_question(monkeypatch):
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.utils",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    utils_module = importlib.import_module("lmms_eval.models.videoseek_native.utils")
+    question = (
+        "This video's subtitles are listed below: \n"
+        "**Timestamp**: 0.7s - 4.7s\n"
+        "**Subtitle**: <font color=\"white\">hello world</font>\n\n"
+        "**Timestamp**: 5.0s - 8.0s\n"
+        "**Subtitle**: second line\n"
+        "Select the best answer to the following multiple-choice question based on the video and the subtitles."
+    )
+
+    subtitles, subtitles_text = utils_module.extract_subtitles_from_question(question)
+
+    assert len(subtitles) == 2
+    assert subtitles[0]["start_time"] == 0.7
+    assert subtitles[0]["subtitle"] == "hello world"
+    assert "**Timestamp**: 5.0s - 8.0s" in subtitles_text
+
+
+def test_exec_action_passes_task_subtitles_to_tools(monkeypatch):
+    monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.agent",
+        "lmms_eval.models.videoseek_native.tools",
+        "lmms_eval.models.videoseek_native.tools.answer",
+        "lmms_eval.models.videoseek_native.tools.focus",
+        "lmms_eval.models.videoseek_native.tools.overview",
+        "lmms_eval.models.videoseek_native.tools.skim",
+        "lmms_eval.models.videoseek_native.utils",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    agent_module = importlib.import_module("lmms_eval.models.videoseek_native.agent")
+
+    captured = {}
+
+    class _DummyVideoReader:
+        def __len__(self):
+            return 10
+
+        def get_avg_fps(self):
+            return 1.0
+
+    class _Registry:
+        def has_tool(self, function_name):
+            return function_name == "overview"
+
+        def get_function(self, _function_name):
+            def _fn(config, parameters):
+                captured["parameters"] = parameters
+                return "ok"
+
+            return _fn
+
+    monkeypatch.setattr(agent_module, "VideoReader", lambda _path: _DummyVideoReader())
 
     agent = agent_module.VideoSeekAgent(
         config={
@@ -367,21 +467,22 @@ def test_agent_initial_prompt_never_injects_subtitles(monkeypatch):
             "timeout": 60,
         },
         video_path="/tmp/video.mp4",
-        subtitle_path=None,
         output_dir="/tmp",
         tools=["overview"],
         verbose=False,
     )
-
-    monkeypatch.setattr(agent, "_call_decision", lambda _step: (_ for _ in ()).throw(RuntimeError("stop here")))
-    monkeypatch.setattr(
-        agent,
-        "_call_final_answer",
-        lambda question, finish_reason: agent_module.Trajectory(question=question, steps=[], final_answer="C", finish_reason=finish_reason),
+    agent.tool_registry = _Registry()
+    question = (
+        "This video's subtitles are listed below: \n"
+        "**Timestamp**: 0.0s - 1.0s\n"
+        "**Subtitle**: foo\n\n"
+        "Select the best answer to the following multiple-choice question based on the video and the subtitles."
     )
+    agent.question = question
+    agent.task_subtitles, agent.task_subtitles_text = agent_module.extract_subtitles_from_question(question)
 
-    question = "This video's subtitles are listed below: \nfoo\nQuestion body"
-    agent.run(question)
-    user_content = agent.messages[1]["content"]
-    assert "Question:\nThis video's subtitles are listed below:" in user_content
-    assert "Video Subtitles:\n" not in user_content
+    outcome = agent._exec_action(types.SimpleNamespace(function_name="overview", parameters={}))
+
+    assert outcome == "ok"
+    assert captured["parameters"]["subtitles"][0]["subtitle"] == "foo"
+    assert "foo" in captured["parameters"]["subtitles_text"]

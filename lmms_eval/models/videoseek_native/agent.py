@@ -10,7 +10,7 @@ from loguru import logger as eval_logger
 
 from .core import Action, Observation, Trajectory, TrajectoryStep
 from .tools import DEFAULT_TOOL_REGISTRY
-from .utils import call_label, call_llm_api, convert_to_free_form_text_representation, load_subtitles
+from .utils import call_label, call_llm_api, extract_subtitles_from_question
 
 
 class BaseAgent(ABC):
@@ -38,7 +38,6 @@ class VideoSeekAgent(BaseAgent):
         self,
         config: dict,
         video_path: str,
-        subtitle_path: str | None,
         output_dir: str,
         tools: list,
         verbose: bool = False,
@@ -54,7 +53,6 @@ class VideoSeekAgent(BaseAgent):
         self.verbose = verbose
 
         self.duration = round(len(self.vr) / self.vr.get_avg_fps(), 2)
-        self.subtitles = load_subtitles(subtitle_path)
 
         self.model_name = config["model_name"]
         self.api_base = config["api_base"]
@@ -72,10 +70,14 @@ class VideoSeekAgent(BaseAgent):
 
         self.messages = self.construct_initial_messages()
         self.trajectory_steps: List[TrajectoryStep] = []
+        self.task_subtitles: List[dict] = []
+        self.task_subtitles_text = ""
 
     def reset(self):
         super().reset()
         self.trajectory_steps = []
+        self.task_subtitles = []
+        self.task_subtitles_text = ""
 
     def construct_initial_messages(self) -> List[dict]:
         system_prompt = self.config["SYSTEM_PROMPT"].format(
@@ -120,7 +122,13 @@ class VideoSeekAgent(BaseAgent):
             parameters = {"question": self.question, "messages": list(self.messages)}
         else:
             parameters = dict(parameters)
-            parameters.update({"vr": self.vr, "subtitles": self.subtitles})
+            parameters.update(
+                {
+                    "vr": self.vr,
+                    "subtitles": list(self.task_subtitles),
+                    "subtitles_text": self.task_subtitles_text,
+                }
+            )
 
         if self.tool_registry.has_tool(function_name):
             outcome = self.tool_registry.get_function(function_name)(config=self.config, parameters=parameters)
@@ -199,7 +207,6 @@ class VideoSeekAgent(BaseAgent):
             "likely_cause": self._infer_json_error_cause(error_text, error_location),
             "message_count": len(self.messages),
             "trajectory_steps_count": len(self.trajectory_steps),
-            "subtitle_count": len(self.subtitles),
             "max_tokens": self.max_tokens,
             "reasoning_effort": self.reasoning_effort,
             "total_message_text_chars": total_text_chars,
@@ -291,6 +298,7 @@ class VideoSeekAgent(BaseAgent):
     def run(self, question: str) -> Trajectory:
         self.reset()
         self.question = question
+        self.task_subtitles, self.task_subtitles_text = extract_subtitles_from_question(question)
         initial_user_content = f"Video Duration: {self.duration:.01f}s\n\nQuestion:\n{question}"
         self.messages.append({"role": "user", "content": initial_user_content})
 

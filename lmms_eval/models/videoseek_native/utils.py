@@ -244,6 +244,68 @@ def convert_to_free_form_text_representation(history: list[dict], content_type: 
     return free_form_text_representation
 
 
+def extract_subtitles_from_question(question: str) -> tuple[list[dict], str]:
+    header = "This video's subtitles are listed below:"
+    if not question or header not in question:
+        return [], ""
+
+    start_idx = question.index(header) + len(header)
+    subtitle_block = question[start_idx:]
+    end_markers = [
+        "\nSelect the best answer to the following multiple-choice question based on the video",
+        "\nQuestion:",
+        "\nOptions:",
+    ]
+    end_positions = [subtitle_block.find(marker) for marker in end_markers if subtitle_block.find(marker) != -1]
+    if end_positions:
+        subtitle_block = subtitle_block[: min(end_positions)]
+    subtitle_block = subtitle_block.strip()
+
+    if not subtitle_block or subtitle_block == "No subtitles available":
+        return [], ""
+
+    pattern = re.compile(
+        r"\*\*Timestamp\*\*:\s*([0-9.]+)s\s*-\s*([0-9.]+)s\s*\n\*\*Subtitle\*\*:\s*(.+?)(?=\n\*\*Timestamp\*\*:\s*|\Z)",
+        re.DOTALL,
+    )
+    subtitles = []
+    for match in pattern.finditer(subtitle_block):
+        text = re.sub(r"<[^>]+>", "", match.group(3)).strip()
+        subtitles.append(
+            {
+                "start_time": float(match.group(1)),
+                "end_time": float(match.group(2)),
+                "subtitle": text,
+            }
+        )
+
+    if subtitles:
+        return subtitles, convert_to_free_form_text_representation(subtitles, content_type="subtitle").strip()
+
+    raw_text = re.sub(r"<[^>]+>", "", subtitle_block).strip()
+    return [], raw_text
+
+
+def subtitles_prompt_text(
+    subtitles: list[dict],
+    subtitles_text: str,
+    start_time: float | None = None,
+    end_time: float | None = None,
+) -> str:
+    if subtitles:
+        filtered = subtitles
+        if start_time is not None and end_time is not None:
+            filtered = [
+                subtitle
+                for subtitle in subtitles
+                if float(subtitle["start_time"]) <= float(end_time) and float(subtitle["end_time"]) >= float(start_time)
+            ]
+        if filtered:
+            return convert_to_free_form_text_representation(filtered, content_type="subtitle").strip()
+        return ""
+    return (subtitles_text or "").strip()
+
+
 def extract_mcq_letter(text: str) -> str:
     match = re.search(r"\b([A-D])\b", str(text).upper())
     return match.group(1) if match else str(text)

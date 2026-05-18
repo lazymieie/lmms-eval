@@ -5,7 +5,7 @@ from io import BytesIO
 import numpy as np
 from PIL import Image
 
-from ..utils import call_label, call_llm_api, convert_to_free_form_text_representation, record_frame_event
+from ..utils import call_label, call_llm_api, record_frame_event
 
 
 overview_tool = {
@@ -22,8 +22,7 @@ overview_tool = {
 def execute_overview(config: dict, parameters: dict) -> str:
     vr = parameters["vr"]
     duration = round(len(vr) / vr.get_avg_fps(), 1)
-    subtitles = parameters["subtitles"]
-    subtitles_str = convert_to_free_form_text_representation(subtitles, content_type="subtitle")
+    subtitles_text = (parameters.get("subtitles_text") or "").strip()
 
     num_frames = config["frame_sampling_factor"] * config["overview_base"]
     if num_frames % 8 != 0:
@@ -69,8 +68,8 @@ def execute_overview(config: dict, parameters: dict) -> str:
         {
             "type": "text",
             "text": (
-                "Video Subtitles:\n"
-                f"{subtitles_str}\n\n"
+                (f"Video Subtitles:\n{subtitles_text}\n\n" if subtitles_text else "")
+                +
                 "Please generate concise descriptions for each frame in the video (prefer 12-20 words each).\n"
                 f"Ensure every timestamp value exactly matches a timestamp from the provided timestamp matrices (same values and formatting): [{cur_timestamps_str}].\n"
                 "Return ONLY valid JSON. Use this exact schema:\n"

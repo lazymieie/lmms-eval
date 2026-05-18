@@ -4,7 +4,7 @@ from io import BytesIO
 import numpy as np
 from PIL import Image
 
-from ..utils import call_label, call_llm_api, convert_to_free_form_text_representation, record_frame_event
+from ..utils import call_label, call_llm_api, record_frame_event, subtitles_prompt_text
 
 
 skim_tool = {
@@ -33,15 +33,8 @@ def execute_skim(config: dict, parameters: dict) -> str:
     end_time = parameters["end_time"]
     num_frames = config["frame_sampling_factor"] * config["skim_base"]
     vr = parameters["vr"]
-    subtitles = parameters["subtitles"]
-    subtitles_str = convert_to_free_form_text_representation(
-        [
-            subtitle
-            for subtitle in subtitles
-            if float(subtitle["start_time"]) <= float(end_time) or float(subtitle["end_time"]) >= float(start_time)
-        ],
-        content_type="subtitle",
-    )
+    subtitles = parameters.get("subtitles", [])
+    subtitles_text = subtitles_prompt_text(subtitles, parameters.get("subtitles_text", ""), start_time=start_time, end_time=end_time)
 
     start_frame = int(start_time * vr.get_avg_fps())
     end_frame = min(int(end_time * vr.get_avg_fps()), len(vr) - 1)
@@ -72,7 +65,8 @@ def execute_skim(config: dict, parameters: dict) -> str:
         {
             "type": "text",
             "text": (
-                f"Video Subtitles:\n{subtitles_str}\n\n"
+                (f"Video Subtitles:\n{subtitles_text}\n\n" if subtitles_text else "")
+                +
                 f"Question:\n{query}\n\n"
                 "Please briefly describe the viewed video frames with their timestamps (prefer 8-15 words per frame). "
                 "If query related content is found, highlight only the relevant timestamps and explain why concisely (prefer <=25 words per relevant timestamp). "
