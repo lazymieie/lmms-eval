@@ -35,19 +35,6 @@ def _safe_int(value, default: int = 0) -> int:
         return default
 
 
-def _subtitle_path_for_video(video_path: str) -> str | None:
-    path = Path(video_path)
-    candidates = [
-        path.with_suffix(".srt"),
-        path.parent.parent / "subtitle" / f"{path.stem}.srt",
-        path.parent.parent / "subtitle" / "subtitle" / f"{path.stem}.srt",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return str(candidate)
-    return None
-
-
 def _build_usage_summary(recorder: dict) -> dict:
     calls = recorder.get("llm_calls", [])
     prompt_values = [_safe_int(call.get("prompt_tokens", 0)) for call in calls]
@@ -374,7 +361,6 @@ class VideoSeek(lmms):
                 raise ValueError(f"VideoSeek expects a local video path, got: {visuals}")
 
             video_path = visuals[0]
-            subtitle_path = _subtitle_path_for_video(video_path)
             safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(task))
             output_dir = self.run_dir / f"{safe_task}_doc{doc_id}_idx{index}"
             response = ""
@@ -383,7 +369,7 @@ class VideoSeek(lmms):
             total_attempts = 1 + self.sample_retry_attempts
             sample_request = {
                 "video_path": video_path,
-                "subtitle_path": subtitle_path,
+                "subtitle_path": None,
                 "question": context,
                 "output_dir": str(output_dir),
                 "config": self._build_agent_config(),

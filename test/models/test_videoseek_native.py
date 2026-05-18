@@ -80,6 +80,45 @@ def test_generate_until_preserves_order_and_writes_summary(monkeypatch, tmp_path
     assert [sample["prediction"] for sample in summary["samples"]] == ["0", "1"]
 
 
+def test_videoseek_does_not_pass_subtitle_path_from_backend(monkeypatch, tmp_path):
+    captured = []
+
+    def fake_run_request(sample_request, timeout, target=videoseek_module._native_videoseek_sample_main):
+        captured.append(sample_request)
+        return {
+            "prediction": "A",
+            "metrics": {
+                "usage_summary": {
+                    "total_prompt_tokens": 1,
+                    "total_completion_tokens": 1,
+                    "total_reasoning_tokens": 0,
+                    "total_visible_output_tokens": 1,
+                    "max_prompt_tokens_single_call": 1,
+                },
+                "frame_summary": {
+                    "total_frames_sampled": 1,
+                    "total_image_inputs": 1,
+                },
+            },
+        }
+
+    monkeypatch.setattr(videoseek_module, "_run_request_in_subprocess", fake_run_request)
+    model = videoseek_module.VideoSeek(output_dir=str(tmp_path), run_name="subtitle-gating", num_workers=1)
+    model.task_dict = {
+        "videomme_long": {"validation": {0: {"video_path": "/tmp/video0.mp4"}}},
+        "videomme_long_w_subtitle": {"validation": {1: {"video_path": "/tmp/video1.mp4"}}},
+    }
+
+    req_no_sub = types.SimpleNamespace(args=("question 0", {}, lambda doc: [doc["video_path"]], 0, "videomme_long", "validation"))
+    req_with_sub = types.SimpleNamespace(args=("question 1", {}, lambda doc: [doc["video_path"]], 1, "videomme_long_w_subtitle", "validation"))
+
+    outputs = model.generate_until([req_no_sub, req_with_sub])
+
+    assert outputs == ["A", "A"]
+    assert captured[0]["subtitle_path"] is None
+    assert captured[1]["subtitle_path"] is None
+
+
 def test_timeout_failure_writes_artifacts(monkeypatch, tmp_path):
     def timeout_request(_sample_request, timeout, target=videoseek_module._native_videoseek_sample_main):
         raise TimeoutError(f"VideoSeek sample timed out after {timeout} seconds")
@@ -279,7 +318,7 @@ def test_decision_json_error_falls_back_to_final_answer(monkeypatch, tmp_path):
     assert detail["likely_cause"] == "likely_incomplete_tool_call_json"
 
 
-def test_question_with_embedded_subtitles_skips_agent_subtitle_injection(monkeypatch):
+def test_agent_initial_prompt_never_injects_subtitles(monkeypatch):
     monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
     for module_name in [
