@@ -1,9 +1,12 @@
 import json
+import re
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import List
 
 from decord import VideoReader
+from loguru import logger as eval_logger
 
 from .core import Action, Observation, Trajectory, TrajectoryStep
 from .tools import DEFAULT_TOOL_REGISTRY
@@ -47,6 +50,7 @@ class VideoSeekAgent(BaseAgent):
         self.tool_registry = DEFAULT_TOOL_REGISTRY
         self.tools = self.tool_registry.resolve_tools(tools + ["answer"])
         self.output_dir = output_dir
+        self.output_dir_path = Path(output_dir)
         self.verbose = verbose
 
         self.duration = round(len(self.vr) / self.vr.get_avg_fps(), 2)
@@ -150,6 +154,74 @@ class VideoSeekAgent(BaseAgent):
             or "tool_calls" in error_text and "validation error" in error_text
         )
 
+    @staticmethod
+    def _message_text(message: dict) -> str:
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text", "")))
+            return "".join(parts)
+        return str(content)
+
+    @staticmethod
+    def _extract_json_error_location(error_text: str) -> dict:
+        match = re.search(r"line (\d+) column (\d+)", error_text)
+        if not match:
+            return {"line": None, "column": None}
+        return {"line": int(match.group(1)), "column": int(match.group(2))}
+
+    def _infer_json_error_cause(self, error_text: str, error_location: dict) -> str:
+        line_no = error_location.get("line")
+        if "EOF while parsing a list" in error_text:
+            if line_no is not None and line_no >= 5000:
+                return "likely_truncated_or_overlong_tool_call_output"
+            return "likely_incomplete_tool_call_json"
+        if "json_invalid" in error_text or "validation error" in error_text:
+            return "likely_malformed_tool_call_json"
+        return "unknown_tool_call_json_error"
+
+    def _write_decision_error_debug(self, step: int, attempt: int, exc: Exception) -> None:
+        error_text = str(exc)
+        error_location = self._extract_json_error_location(error_text)
+        message_texts = [self._message_text(message) for message in self.messages]
+        total_text_chars = sum(len(text) for text in message_texts)
+        last_message_text = message_texts[-1] if message_texts else ""
+        snapshot = {
+            "step": step + 1,
+            "attempt": attempt,
+            "error_type": type(exc).__name__,
+            "error": error_text,
+            "error_location": error_location,
+            "likely_cause": self._infer_json_error_cause(error_text, error_location),
+            "message_count": len(self.messages),
+            "trajectory_steps_count": len(self.trajectory_steps),
+            "subtitle_count": len(self.subtitles),
+            "max_tokens": self.max_tokens,
+            "reasoning_effort": self.reasoning_effort,
+            "total_message_text_chars": total_text_chars,
+            "last_message_text_chars": len(last_message_text),
+            "last_message_preview": last_message_text[:1000],
+            "messages": self.messages,
+        }
+        self.output_dir_path.mkdir(parents=True, exist_ok=True)
+        debug_path = self.output_dir_path / "decision_error_debug.jsonl"
+        with debug_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
+        detail_path = self.output_dir_path / f"decision_error_step{step + 1}_attempt{attempt}.json"
+        detail_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+        eval_logger.warning(
+            "VideoSeek decision JSON error: "
+            f"step={step + 1} attempt={attempt}/{self.decision_retry_attempts} "
+            f"line={error_location.get('line')} column={error_location.get('column')} "
+            f"messages={len(self.messages)} text_chars={total_text_chars} "
+            f"likely_cause={snapshot['likely_cause']} "
+            f"debug_file={detail_path}"
+        )
+
     def _call_final_answer(self, question: str, finish_reason: str) -> Trajectory:
         self.messages.append(
             {
@@ -199,6 +271,8 @@ class VideoSeekAgent(BaseAgent):
                     )
             except Exception as exc:
                 last_error = exc
+                if self._is_tool_call_json_error(exc):
+                    self._write_decision_error_debug(step, attempt, exc)
                 if not self._is_tool_call_json_error(exc) or attempt >= self.decision_retry_attempts:
                     break
                 self.messages.append(

@@ -202,7 +202,7 @@ def test_observation_history_is_compacted(monkeypatch):
     assert len(compacted) > 64
 
 
-def test_decision_json_error_falls_back_to_final_answer(monkeypatch):
+def test_decision_json_error_falls_back_to_final_answer(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
     for module_name in [
@@ -264,7 +264,7 @@ def test_decision_json_error_falls_back_to_final_answer(monkeypatch):
         },
         video_path="/tmp/video.mp4",
         subtitle_path=None,
-        output_dir="/tmp",
+        output_dir=str(tmp_path),
         tools=["overview"],
         verbose=False,
     )
@@ -273,3 +273,7 @@ def test_decision_json_error_falls_back_to_final_answer(monkeypatch):
     assert trajectory.final_answer == "C"
     assert trajectory.finish_reason.startswith("decision_error_fallback")
     assert call_count["value"] >= 2
+    debug_lines = (tmp_path / "decision_error_debug.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(debug_lines) == 2
+    detail = json.loads((tmp_path / "decision_error_step1_attempt1.json").read_text(encoding="utf-8"))
+    assert detail["likely_cause"] == "likely_incomplete_tool_call_json"
