@@ -1,4 +1,3 @@
-import json
 import re
 import time
 from abc import ABC, abstractmethod
@@ -391,15 +390,6 @@ class VideoSeekAgent(BaseAgent):
             except Exception:
                 actions = []
 
-            if actions and actions[0].function_name != "answer":
-                assistant_message["tool_calls"] = [
-                    {
-                        "id": action.function_id,
-                        "type": "function",
-                        "function": {"name": action.function_name, "arguments": json.dumps(action.parameters, ensure_ascii=False)},
-                    }
-                    for action in actions
-                ]
             self.messages.append(assistant_message)
 
             if len(actions) == 0:

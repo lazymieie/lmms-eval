@@ -562,61 +562,103 @@ def test_build_final_answer_messages_keeps_system_at_beginning(monkeypatch):
     assert messages[-1]["role"] == "user"
 
 
-def test_call_llm_api_normalizes_assistant_tool_call_arguments(monkeypatch):
-    captured = {}
-
-    def fake_completion(**kwargs):
-        captured["messages"] = kwargs["messages"]
-        message = types.SimpleNamespace(content="ok")
-        choice = types.SimpleNamespace(message=message, finish_reason="stop")
-        usage = types.SimpleNamespace(prompt_tokens=1, completion_tokens=1, reasoning_tokens=0)
-        return types.SimpleNamespace(choices=[choice], usage=usage)
-
-    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=fake_completion))
+def test_run_does_not_reinject_historical_tool_calls(monkeypatch):
+    monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
     for module_name in [
+        "lmms_eval.models.videoseek_native.agent",
+        "lmms_eval.models.videoseek_native.tools",
+        "lmms_eval.models.videoseek_native.tools.answer",
+        "lmms_eval.models.videoseek_native.tools.focus",
+        "lmms_eval.models.videoseek_native.tools.overview",
+        "lmms_eval.models.videoseek_native.tools.skim",
         "lmms_eval.models.videoseek_native.utils",
     ]:
         sys.modules.pop(module_name, None)
 
-    utils_module = importlib.import_module("lmms_eval.models.videoseek_native.utils")
+    agent_module = importlib.import_module("lmms_eval.models.videoseek_native.agent")
+    tool_module = importlib.import_module("lmms_eval.models.videoseek_native.tools")
 
-    response = utils_module.call_llm_api(
-        model_name="model",
-        api_base="http://localhost",
-        api_key="key",
-        api_version="",
-        max_tokens=64,
-        reasoning_effort="none",
-        seed=42,
-        temperature=0.0,
-        messages=[
-            {"role": "system", "content": "system"},
-            {"role": "user", "content": "q"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "skim",
-                            "arguments": "{\"query\": \"x\", \"start_time\": 0, \"end_time\": 10}",
-                        },
-                    }
-                ],
-            },
-        ],
-        tools=[],
-        tool_choice="auto",
-        timeout=30,
+    class _FakeVR:
+        def __len__(self):
+            return 10
+
+        def get_avg_fps(self):
+            return 1.0
+
+    monkeypatch.setattr(agent_module, "VideoReader", lambda _path: _FakeVR())
+
+    call_count = {"value": 0}
+
+    def fake_call_llm_api(**kwargs):
+        call_count["value"] += 1
+        if kwargs.get("tool_choice") == "auto":
+            if call_count["value"] == 1:
+                message = types.SimpleNamespace(
+                    content="",
+                    reasoning="",
+                    tool_calls=[
+                        {
+                            "id": "call-1",
+                            "function": {"name": "overview", "arguments": "{}"},
+                        }
+                    ],
+                )
+            else:
+                for message_payload in kwargs["messages"]:
+                    if message_payload.get("role") == "assistant":
+                        assert "tool_calls" not in message_payload
+                message = types.SimpleNamespace(
+                    content="",
+                    reasoning="",
+                    tool_calls=[
+                        {
+                            "id": "call-2",
+                            "function": {"name": "answer", "arguments": "{}"},
+                        }
+                    ],
+                )
+            choice = types.SimpleNamespace(message=message)
+            return types.SimpleNamespace(choices=[choice])
+
+        message = types.SimpleNamespace(content="A")
+        choice = types.SimpleNamespace(message=message)
+        return types.SimpleNamespace(choices=[choice])
+
+    monkeypatch.setattr(agent_module, "call_llm_api", fake_call_llm_api)
+    monkeypatch.setitem(
+        tool_module.TOOL_FUNCTIONS,
+        "overview",
+        lambda config, parameters: "overview ok",
     )
 
-    assert response.choices[0].message.content == "ok"
-    tool_arguments = captured["messages"][2]["tool_calls"][0]["function"]["arguments"]
-    assert isinstance(tool_arguments, dict)
-    assert tool_arguments["query"] == "x"
-    assert tool_arguments["start_time"] == 0
+    agent = agent_module.VideoSeekAgent(
+        config={
+            "SYSTEM_PROMPT": "sys",
+            "frame_sampling_factor": 1,
+            "overview_base": 8,
+            "skim_base": 4,
+            "focus_base": 4,
+            "model_name": "model",
+            "api_base": "http://localhost",
+            "api_key": "key",
+            "api_version": "",
+            "max_steps": 2,
+            "max_tokens": 128,
+            "reasoning_effort": "none",
+            "seed": 42,
+            "temperature": 0.0,
+            "timeout": 60,
+            "tools": ["overview", "skim", "focus"],
+        },
+        video_path="/tmp/video.mp4",
+        output_dir="/tmp",
+        tools=["overview"],
+        verbose=False,
+    )
+
+    trajectory = agent.run("Question?\nA. a\nB. b\nC. c\nD. d")
+    assert trajectory.final_answer == "A"
 
 
 def test_call_decision_uses_auto_tool_choice(monkeypatch):
