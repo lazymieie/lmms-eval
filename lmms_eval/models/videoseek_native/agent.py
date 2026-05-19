@@ -237,6 +237,53 @@ class VideoSeekAgent(BaseAgent):
             f"debug_file={detail_path}"
         )
 
+    @staticmethod
+    def _serialize_tool_call(tool_call):
+        if tool_call is None:
+            return None
+        if isinstance(tool_call, dict):
+            return tool_call
+        dump_method = getattr(tool_call, "model_dump", None)
+        if callable(dump_method):
+            try:
+                return dump_method()
+            except Exception:
+                pass
+        function = getattr(tool_call, "function", None)
+        serialized = {
+            "id": getattr(tool_call, "id", None),
+            "type": getattr(tool_call, "type", None),
+            "function": {
+                "name": getattr(function, "name", None),
+                "arguments": getattr(function, "arguments", None),
+            },
+        }
+        return serialized
+
+    def _write_empty_action_debug(self, step: int, message, parse_error: Exception | None) -> None:
+        tool_calls = getattr(message, "tool_calls", None) if message is not None else None
+        snapshot = {
+            "step": step + 1,
+            "reason": "decision_returned_no_valid_actions",
+            "parse_error": str(parse_error) if parse_error is not None else "",
+            "message_content": str(getattr(message, "content", "") or "") if message is not None else "",
+            "message_reasoning": str(
+                getattr(message, "reasoning", "") or getattr(message, "reasoning_content", "") or ""
+            )
+            if message is not None
+            else "",
+            "raw_tool_calls": [self._serialize_tool_call(tool_call) for tool_call in (tool_calls or [])],
+            "message_type": type(message).__name__ if message is not None else None,
+        }
+        self.output_dir_path.mkdir(parents=True, exist_ok=True)
+        detail_path = self.output_dir_path / f"decision_empty_actions_step{step + 1}.json"
+        detail_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+        eval_logger.warning(
+            "VideoSeek decision produced no valid actions: "
+            f"step={step + 1} parse_error={snapshot['parse_error'][:160]!r} "
+            f"tool_calls={len(snapshot['raw_tool_calls'])} debug_file={detail_path}"
+        )
+
     def _call_final_answer(self, question: str, finish_reason: str) -> Trajectory:
         final_messages = build_final_answer_messages(
             messages=self.messages,
@@ -394,14 +441,17 @@ class VideoSeekAgent(BaseAgent):
             thought = reasoning_text or visible_content or ""
             assistant_message = {"role": "assistant", "content": visible_content}
 
+            parse_error = None
             try:
                 actions = self._parse_actions(getattr(message, "tool_calls", None) if message is not None else None)
-            except Exception:
+            except Exception as exc:
+                parse_error = exc
                 actions = []
 
             self.messages.append(assistant_message)
 
             if len(actions) == 0:
+                self._write_empty_action_debug(step, message, parse_error)
                 self.messages.append(
                     {
                         "role": "user",
