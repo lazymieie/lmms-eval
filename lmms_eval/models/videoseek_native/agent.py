@@ -92,17 +92,26 @@ class VideoSeekAgent(BaseAgent):
         for tool_idx, tool_call in enumerate(tool_calls or []):
             if isinstance(tool_call, dict):
                 function_name = tool_call.get("function", {}).get("name")
-                arguments_text = tool_call.get("function", {}).get("arguments", "{}")
+                arguments_value = tool_call.get("function", {}).get("arguments", "{}")
                 function_id = tool_call.get("id")
             else:
                 function_name = getattr(getattr(tool_call, "function", None), "name", None)
-                arguments_text = getattr(getattr(tool_call, "function", None), "arguments", "{}")
+                arguments_value = getattr(getattr(tool_call, "function", None), "arguments", "{}")
                 function_id = getattr(tool_call, "id", None)
 
-            try:
-                parameters = json.loads(arguments_text or "{}")
-            except Exception as exc:
-                raise ValueError(f"Invalid tool call arguments for {function_name}: {exc}") from exc
+            if isinstance(arguments_value, dict):
+                parameters = dict(arguments_value)
+            elif arguments_value in (None, ""):
+                parameters = {}
+            elif isinstance(arguments_value, str):
+                try:
+                    parameters = json.loads(arguments_value or "{}")
+                except Exception as exc:
+                    raise ValueError(f"Invalid tool call arguments for {function_name}: {exc}") from exc
+            else:
+                raise ValueError(
+                    f"Invalid tool call arguments type for {function_name}: {type(arguments_value).__name__}"
+                )
 
             if self.tool_registry.has_tool(function_name):
                 if function_name == "answer":

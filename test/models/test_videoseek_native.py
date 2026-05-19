@@ -207,6 +207,18 @@ def test_parse_actions_handles_valid_and_bad_json(monkeypatch):
     assert len(actions) == 1
     assert actions[0].function_name == "overview"
 
+    actions = agent._parse_actions(
+        [
+            {
+                "id": "call-1b",
+                "function": {"name": "skim", "arguments": {"query": "x", "start_time": 0, "end_time": 16}},
+            }
+        ]
+    )
+    assert len(actions) == 1
+    assert actions[0].function_name == "skim"
+    assert actions[0].parameters["query"] == "x"
+
     with pytest.raises(ValueError):
         agent._parse_actions(
             [
