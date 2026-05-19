@@ -21,27 +21,34 @@ def retry_with_exponential_backoff(
     """Retry a function with exponential backoff."""
 
     def wrapper(*args, **kwargs):
+        retry_max_retries = max(0, int(kwargs.pop("_retry_max_retries", max_retries)))
+        retry_initial_delay = max(0.0, float(kwargs.pop("_retry_initial_delay", initial_delay)))
+        retry_exponential_base = max(1.0, float(kwargs.pop("_retry_exponential_base", exponential_base)))
+        retry_jitter = kwargs.pop("_retry_jitter", jitter)
+
         num_retries = 0
-        delay = initial_delay
+        delay = retry_initial_delay
 
         while True:
             try:
                 return func(*args, **kwargs)
             except Exception as exc:
                 error_text = str(exc)
+                error_text_lower = error_text.lower()
                 if (
-                    "rate limit" in error_text.lower()
+                    "rate limit" in error_text_lower
                     or "timed out" in error_text
+                    or "timeout" in error_text_lower
                     or "Too Many Requests" in error_text
                     or "Forbidden for url" in error_text
-                    or "the maximum usage" in error_text.lower()
-                    or "server had an error" in error_text.lower()
-                    or "internal" in error_text.lower()
+                    or "the maximum usage" in error_text_lower
+                    or "server had an error" in error_text_lower
+                    or "internal" in error_text_lower
                 ):
                     num_retries += 1
-                    if num_retries > max_retries:
+                    if num_retries > retry_max_retries:
                         raise RuntimeError(f"Max retries reached for LiteLLM request: {error_text}") from exc
-                    delay *= exponential_base * (1 + jitter * random.random())
+                    delay *= retry_exponential_base * (1 + retry_jitter * random.random())
                     time.sleep(delay)
                 else:
                     raise

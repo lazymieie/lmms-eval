@@ -29,6 +29,7 @@ def execute_answer(config: dict, parameters: dict) -> str:
             reasoning_effort=config["reasoning_effort"],
             seed=config["seed"],
             temperature=config["temperature"],
-            timeout=config.get("timeout", 900),
+            timeout=config.get("final_answer_timeout", config.get("timeout", 900)),
+            _retry_max_retries=config.get("final_answer_api_retry_attempts", 1),
         )
     return response.choices[0].message.content

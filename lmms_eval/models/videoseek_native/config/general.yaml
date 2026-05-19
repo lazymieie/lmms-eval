@@ -13,6 +13,12 @@ max_tokens: 32768
 observation_max_chars: 1600
 decision_retry_attempts: 3
 decision_retry_backoff_s: 1.0
+decision_timeout: 120
+tool_timeout: 300
+final_answer_timeout: 120
+decision_api_retry_attempts: 1
+tool_api_retry_attempts: 2
+final_answer_api_retry_attempts: 1
 
 frame_sampling_factor: 4
 overview_base: 16

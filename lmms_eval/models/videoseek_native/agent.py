@@ -67,6 +67,12 @@ class VideoSeekAgent(BaseAgent):
         self.seed = config["seed"]
         self.temperature = config["temperature"]
         self.timeout = config.get("timeout", 900)
+        self.decision_timeout = max(1, int(config.get("decision_timeout", min(self.timeout, 120))))
+        self.tool_timeout = max(1, int(config.get("tool_timeout", min(self.timeout, 300))))
+        self.final_answer_timeout = max(1, int(config.get("final_answer_timeout", min(self.timeout, 120))))
+        self.decision_api_retry_attempts = max(0, int(config.get("decision_api_retry_attempts", 1)))
+        self.tool_api_retry_attempts = max(0, int(config.get("tool_api_retry_attempts", 2)))
+        self.final_answer_api_retry_attempts = max(0, int(config.get("final_answer_api_retry_attempts", 1)))
 
         self.messages = self.construct_initial_messages()
         self.trajectory_steps: List[TrajectoryStep] = []
@@ -302,7 +308,8 @@ class VideoSeekAgent(BaseAgent):
                 reasoning_effort=self.reasoning_effort,
                 seed=self.seed,
                 temperature=self.temperature,
-                timeout=self.timeout,
+                timeout=self.final_answer_timeout,
+                _retry_max_retries=self.final_answer_api_retry_attempts,
             )
         self.final_answer = self._repair_final_answer_if_needed(question, str(response.choices[0].message.content or ""))
         self.messages.append({"role": "assistant", "content": self.final_answer})
@@ -357,7 +364,8 @@ class VideoSeekAgent(BaseAgent):
                 reasoning_effort="none",
                 seed=self.seed,
                 temperature=0.0,
-                timeout=min(self.timeout, 120),
+                timeout=min(self.final_answer_timeout, 120),
+                _retry_max_retries=self.final_answer_api_retry_attempts,
             )
         repaired = extract_mcq_letter(str(response.choices[0].message.content or ""))
         if self._is_single_option_letter(repaired):
@@ -381,7 +389,8 @@ class VideoSeekAgent(BaseAgent):
                         tools=self.tools,
                         tool_choice="auto",
                         temperature=self.temperature,
-                        timeout=self.timeout,
+                        timeout=self.decision_timeout,
+                        _retry_max_retries=self.decision_api_retry_attempts,
                     )
             except Exception as exc:
                 last_error = exc

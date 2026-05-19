@@ -89,7 +89,8 @@ def execute_overview(config: dict, parameters: dict) -> str:
             seed=config["seed"],
             temperature=config["temperature"],
             return_json=True,
-            timeout=config.get("timeout", 900),
+            timeout=config.get("tool_timeout", config.get("timeout", 900)),
+            _retry_max_retries=config.get("tool_api_retry_attempts", 2),
         )
 
     return "\n\n".join([f"{frame['timestamp']}: {frame['description']}" for frame in json.loads(response.choices[0].message.content)["frames"]])

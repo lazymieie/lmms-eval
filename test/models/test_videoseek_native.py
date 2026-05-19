@@ -5,6 +5,7 @@ import time
 import types
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from lmms_eval.models.simple import videoseek as videoseek_module
@@ -281,7 +282,7 @@ def test_decision_json_error_falls_back_to_final_answer(monkeypatch, tmp_path):
 
     def fake_call_llm_api(**kwargs):
         call_count["value"] += 1
-        if kwargs.get("tool_choice") == "required":
+        if kwargs.get("tool_choice") == "auto":
             raise RuntimeError("Invalid JSON: EOF while parsing a list")
         message = types.SimpleNamespace(content="C")
         choice = types.SimpleNamespace(message=message)
@@ -708,6 +709,8 @@ def test_call_decision_uses_auto_tool_choice(monkeypatch):
     agent.seed = 42
     agent.temperature = 0.0
     agent.timeout = 60
+    agent.decision_timeout = 45
+    agent.decision_api_retry_attempts = 2
     agent.decision_retry_attempts = 1
     agent.decision_retry_backoff_s = 0.0
     agent.tools = [{"type": "function", "function": {"name": "overview", "parameters": {"type": "object"}}}]
@@ -717,6 +720,76 @@ def test_call_decision_uses_auto_tool_choice(monkeypatch):
 
     assert captured["tool_choice"] == "auto"
     assert captured["tools"][0]["function"]["name"] == "overview"
+    assert captured["timeout"] == 45
+    assert captured["_retry_max_retries"] == 2
+
+
+def test_focus_uses_tool_timeout_and_retry_attempts(monkeypatch):
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.tools.focus",
+        "lmms_eval.models.videoseek_native.utils",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    focus_module = importlib.import_module("lmms_eval.models.videoseek_native.tools.focus")
+    captured = {}
+
+    def fake_call_llm_api(**kwargs):
+        captured.update(kwargs)
+        message = types.SimpleNamespace(content="ok")
+        choice = types.SimpleNamespace(message=message)
+        return types.SimpleNamespace(choices=[choice])
+
+    class _Batch:
+        def __init__(self, array):
+            self._array = array
+
+        def asnumpy(self):
+            return self._array
+
+    class _FakeVR:
+        def __len__(self):
+            return 20
+
+        def get_avg_fps(self):
+            return 1.0
+
+        def get_batch(self, indices):
+            frame_count = len(indices)
+            return _Batch(np.zeros((frame_count, 8, 8, 3), dtype=np.uint8))
+
+    monkeypatch.setattr(focus_module, "call_llm_api", fake_call_llm_api)
+
+    result = focus_module.execute_focus(
+        config={
+            "model_name": "model",
+            "api_base": "http://localhost",
+            "api_key": "key",
+            "api_version": "",
+            "max_tokens": 128,
+            "tool_reasoning_effort": "none",
+            "seed": 42,
+            "temperature": 0.0,
+            "timeout": 900,
+            "tool_timeout": 180,
+            "tool_api_retry_attempts": 3,
+            "frame_sampling_factor": 1,
+            "focus_base": 4,
+        },
+        parameters={
+            "query": "What is visible?",
+            "start_time": 1,
+            "end_time": 3,
+            "vr": _FakeVR(),
+            "subtitles": [],
+            "subtitles_text": "",
+        },
+    )
+
+    assert result == "ok"
+    assert captured["timeout"] == 180
+    assert captured["_retry_max_retries"] == 3
 
 
 def test_repair_final_answer_if_needed_repairs_non_letter_mcq_output(monkeypatch):

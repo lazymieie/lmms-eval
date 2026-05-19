@@ -94,7 +94,8 @@ def execute_skim(config: dict, parameters: dict) -> str:
             reasoning_effort=config.get("tool_reasoning_effort", "none"),
             seed=config["seed"],
             temperature=config["temperature"],
-            timeout=config.get("timeout", 900),
+            timeout=config.get("tool_timeout", config.get("timeout", 900)),
+            _retry_max_retries=config.get("tool_api_retry_attempts", 2),
         )
 
     return response.choices[0].message.content
