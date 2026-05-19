@@ -140,6 +140,28 @@ def build_agent_config(manifest: dict[str, Any], args: argparse.Namespace) -> di
         "max_tokens": args.max_tokens if args.max_tokens is not None else manifest.get("max_tokens", 4096),
         "max_steps": args.max_steps if args.max_steps is not None else manifest.get("max_steps", 6),
         "timeout": args.timeout if args.timeout is not None else manifest.get("timeout", 1800),
+        "decision_timeout": (
+            args.decision_timeout if args.decision_timeout is not None else manifest.get("decision_timeout")
+        ),
+        "tool_timeout": args.tool_timeout if args.tool_timeout is not None else manifest.get("tool_timeout"),
+        "final_answer_timeout": (
+            args.final_answer_timeout if args.final_answer_timeout is not None else manifest.get("final_answer_timeout")
+        ),
+        "decision_api_retry_attempts": (
+            args.decision_api_retry_attempts
+            if args.decision_api_retry_attempts is not None
+            else manifest.get("decision_api_retry_attempts")
+        ),
+        "tool_api_retry_attempts": (
+            args.tool_api_retry_attempts
+            if args.tool_api_retry_attempts is not None
+            else manifest.get("tool_api_retry_attempts")
+        ),
+        "final_answer_api_retry_attempts": (
+            args.final_answer_api_retry_attempts
+            if args.final_answer_api_retry_attempts is not None
+            else manifest.get("final_answer_api_retry_attempts")
+        ),
     }
 
 
@@ -289,6 +311,12 @@ def main() -> int:
     parser.add_argument("--max-tokens", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--timeout", type=int, default=None)
+    parser.add_argument("--decision-timeout", type=int, default=None)
+    parser.add_argument("--tool-timeout", type=int, default=None)
+    parser.add_argument("--final-answer-timeout", type=int, default=None)
+    parser.add_argument("--decision-api-retry-attempts", type=int, default=None)
+    parser.add_argument("--tool-api-retry-attempts", type=int, default=None)
+    parser.add_argument("--final-answer-api-retry-attempts", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--workers", type=int, default=1, help="Number of samples to rerun concurrently")
     parser.add_argument("--verbose", action="store_true")
@@ -320,17 +348,36 @@ def main() -> int:
         doc_ids=set(args.doc_id) if args.doc_id else None,
     )
 
+    agent_config = build_agent_config(manifest, args)
+
     print(f"run_dir: {run_dir}")
     print(f"tasks: {', '.join(task_names)}")
     print(f"existing_samples: {len(existing)}")
     print(f"rerun_targets: {len(targets)}")
     print(f"workers: {max(1, args.workers)}")
+    print(
+        "effective_agent_config: "
+        + json.dumps(
+            {
+                "model_name": agent_config.get("model_name"),
+                "api_base": agent_config.get("api_base"),
+                "max_steps": agent_config.get("max_steps"),
+                "max_tokens": agent_config.get("max_tokens"),
+                "timeout": agent_config.get("timeout"),
+                "decision_timeout": agent_config.get("decision_timeout"),
+                "tool_timeout": agent_config.get("tool_timeout"),
+                "final_answer_timeout": agent_config.get("final_answer_timeout"),
+                "decision_api_retry_attempts": agent_config.get("decision_api_retry_attempts"),
+                "tool_api_retry_attempts": agent_config.get("tool_api_retry_attempts"),
+                "final_answer_api_retry_attempts": agent_config.get("final_answer_api_retry_attempts"),
+            },
+            ensure_ascii=False,
+        )
+    )
     for target in targets[:20]:
         print(f"  task={target['task']} doc_id={target['doc_id']} idx={target['index']} reason={target['reason']}")
     if args.dry_run:
         return 0
-
-    agent_config = build_agent_config(manifest, args)
     report: list[dict[str, Any]] = []
     max_workers = max(1, int(args.workers))
     if max_workers == 1:
