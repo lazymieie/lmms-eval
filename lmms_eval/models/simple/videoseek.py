@@ -1,8 +1,11 @@
 import json
 import multiprocessing as mp
+import os
 import queue
 import re
+import signal
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Tuple
@@ -164,11 +167,61 @@ def _write_failure_artifacts(
     return {"usage_summary": usage_summary, "frame_summary": frame_summary}
 
 
+def _write_timeout_snapshot(
+    output_dir: Path,
+    question: str,
+    recorder: dict,
+    agent,
+    reason: str,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    trajectory_payload = _build_partial_trajectory_payload(agent, question, reason)
+    trajectory_payload["timeout_reason"] = reason
+    _write_failure_artifacts(output_dir, question, reason, recorder, trajectory_payload=trajectory_payload)
+    stack_path = output_dir / "timeout_traceback.txt"
+    stack_text = "".join(traceback.format_stack())
+    stack_path.write_text(stack_text, encoding="utf-8")
+    snapshot_path = output_dir / "timeout_snapshot.json"
+    snapshot = {
+        "reason": reason,
+        "question": question,
+        "llm_calls": recorder.get("llm_calls", []),
+        "tool_frame_calls": recorder.get("frame_calls", []),
+        "agent_question": getattr(agent, "question", None) if agent is not None else None,
+        "agent_final_answer": getattr(agent, "final_answer", None) if agent is not None else None,
+        "agent_message_count": len(getattr(agent, "messages", []) or []) if agent is not None else 0,
+        "agent_total_steps": len(getattr(agent, "trajectory_steps", []) or []) if agent is not None else 0,
+    }
+    _write_json(snapshot_path, snapshot)
+
+
 def _native_videoseek_sample_main(sample_request: dict, result_queue) -> None:
     recorder = {"llm_calls": [], "frame_calls": [], "video_path": sample_request["video_path"]}
     output_dir = Path(sample_request["output_dir"])
     question = sample_request["question"]
     agent = None
+    timeout_state = {"triggered": False}
+
+    def _handle_sigterm(_signum, _frame) -> None:
+        timeout_state["triggered"] = True
+        try:
+            _write_timeout_snapshot(
+                output_dir=output_dir,
+                question=question,
+                recorder=recorder,
+                agent=agent,
+                reason="VideoSeek child process received SIGTERM during sample timeout handling",
+            )
+        except Exception as exc:  # pragma: no cover - best effort during termination
+            try:
+                (output_dir / "timeout_snapshot_error.txt").write_text(str(exc), encoding="utf-8")
+            except Exception:
+                pass
+        finally:
+            os._exit(143)
+
+    previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _handle_sigterm)
 
     from lmms_eval.models.videoseek_native.agent import VideoSeekAgent
     from lmms_eval.models.videoseek_native.config import build_agent_config
@@ -199,6 +252,8 @@ def _native_videoseek_sample_main(sample_request: dict, result_queue) -> None:
     finally:
         set_call_label(None)
         set_thread_recorder(None)
+        if not timeout_state["triggered"]:
+            signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
 
 def _run_request_in_subprocess(sample_request: dict, timeout: int, target=_native_videoseek_sample_main) -> dict:
