@@ -486,3 +486,95 @@ def test_exec_action_passes_task_subtitles_to_tools(monkeypatch):
     assert outcome == "ok"
     assert captured["parameters"]["subtitles"][0]["subtitle"] == "foo"
     assert "foo" in captured["parameters"]["subtitles_text"]
+
+
+def test_answer_tool_adds_explicit_no_tool_final_answer_constraints(monkeypatch):
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.tools.answer",
+        "lmms_eval.models.videoseek_native.utils",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    answer_module = importlib.import_module("lmms_eval.models.videoseek_native.tools.answer")
+    captured = {}
+
+    def fake_call_llm_api(**kwargs):
+        captured["messages"] = kwargs["messages"]
+        message = types.SimpleNamespace(content="B")
+        choice = types.SimpleNamespace(message=message)
+        return types.SimpleNamespace(choices=[choice])
+
+    monkeypatch.setattr(answer_module, "call_llm_api", fake_call_llm_api)
+
+    result = answer_module.execute_answer(
+        config={
+            "model_name": "model",
+            "api_base": "http://localhost",
+            "api_key": "key",
+            "api_version": "",
+            "max_tokens": 128,
+            "reasoning_effort": "none",
+            "seed": 42,
+            "temperature": 0.0,
+            "timeout": 60,
+        },
+        parameters={
+            "question": "Question?\nA. a\nB. b\nC. c\nD. d",
+            "messages": [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "Return tool calls only"},
+            ],
+        },
+    )
+
+    assert result == "B"
+    assert captured["messages"][-2]["role"] == "system"
+    assert "Do not call any tool." in captured["messages"][-2]["content"]
+    assert "Ignore earlier instructions that asked for tool calls." in captured["messages"][-2]["content"]
+    assert captured["messages"][-1]["role"] == "user"
+    assert "respond with only the single option letter" in captured["messages"][-1]["content"]
+
+
+def test_repair_final_answer_if_needed_repairs_non_letter_mcq_output(monkeypatch):
+    monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.agent",
+        "lmms_eval.models.videoseek_native.tools",
+        "lmms_eval.models.videoseek_native.tools.answer",
+        "lmms_eval.models.videoseek_native.tools.focus",
+        "lmms_eval.models.videoseek_native.tools.overview",
+        "lmms_eval.models.videoseek_native.tools.skim",
+        "lmms_eval.models.videoseek_native.utils",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    agent_module = importlib.import_module("lmms_eval.models.videoseek_native.agent")
+    captured = {}
+
+    def fake_call_llm_api(**kwargs):
+        captured["messages"] = kwargs["messages"]
+        message = types.SimpleNamespace(content="C")
+        choice = types.SimpleNamespace(message=message)
+        return types.SimpleNamespace(choices=[choice])
+
+    monkeypatch.setattr(agent_module, "call_llm_api", fake_call_llm_api)
+
+    agent = agent_module.VideoSeekAgent.__new__(agent_module.VideoSeekAgent)
+    agent.model_name = "model"
+    agent.api_base = "http://localhost"
+    agent.api_key = "key"
+    agent.api_version = ""
+    agent.max_tokens = 1024
+    agent.seed = 42
+    agent.timeout = 60
+
+    repaired = agent._repair_final_answer_if_needed(
+        "Question?\nA. a\nB. b\nC. c\nD. d",
+        "<tool_call><function=skim></function></tool_call>",
+    )
+
+    assert repaired == "C"
+    assert captured["messages"][0]["role"] == "system"
+    assert "Respond with exactly one uppercase letter" in captured["messages"][0]["content"]

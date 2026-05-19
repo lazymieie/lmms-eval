@@ -10,7 +10,7 @@ from loguru import logger as eval_logger
 
 from .core import Action, Observation, Trajectory, TrajectoryStep
 from .tools import DEFAULT_TOOL_REGISTRY
-from .utils import call_label, call_llm_api, extract_subtitles_from_question
+from .utils import call_label, call_llm_api, extract_mcq_letter, extract_subtitles_from_question
 
 
 class BaseAgent(ABC):
@@ -232,10 +232,24 @@ class VideoSeekAgent(BaseAgent):
     def _call_final_answer(self, question: str, finish_reason: str) -> Trajectory:
         self.messages.append(
             {
+                "role": "system",
+                "content": (
+                    "You are now in the final answer stage. "
+                    "Do not call any tool. "
+                    "Do not output XML, JSON, code fences, or any tool-call syntax. "
+                    "Ignore earlier instructions that asked for tool calls. "
+                    "Answer directly using the requested final answer format only."
+                ),
+            }
+        )
+        self.messages.append(
+            {
                 "role": "user",
                 "content": (
                     "You have reached the final answer stage. "
                     f"Question:\n{question}\n\n"
+                    "Provide the final answer now. "
+                    "Do not call any tool and do not propose further actions. "
                     "If the question is a multiple-choice question, directly answer with only the option letter from the given choices."
                 ),
             }
@@ -253,9 +267,65 @@ class VideoSeekAgent(BaseAgent):
                 temperature=self.temperature,
                 timeout=self.timeout,
             )
-        self.final_answer = str(response.choices[0].message.content or "")
+        self.final_answer = self._repair_final_answer_if_needed(question, str(response.choices[0].message.content or ""))
         self.messages.append({"role": "assistant", "content": self.final_answer})
         return Trajectory(question=question, steps=self.trajectory_steps, final_answer=self.final_answer, finish_reason=finish_reason)
+
+    @staticmethod
+    def _is_mcq_question(question: str) -> bool:
+        text = str(question or "")
+        return all(marker in text for marker in ["A.", "B.", "C.", "D."])
+
+    @staticmethod
+    def _is_single_option_letter(answer: str) -> bool:
+        return str(answer or "").strip().upper() in {"A", "B", "C", "D"}
+
+    def _repair_final_answer_if_needed(self, question: str, answer: str) -> str:
+        normalized_answer = str(answer or "").strip()
+        if not self._is_mcq_question(question):
+            return normalized_answer
+        if self._is_single_option_letter(normalized_answer):
+            return normalized_answer.upper()
+
+        extracted = extract_mcq_letter(normalized_answer)
+        if self._is_single_option_letter(extracted):
+            return extracted.upper()
+
+        repair_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are repairing the final answer format for a multiple-choice question. "
+                    "Do not call any tool. "
+                    "Respond with exactly one uppercase letter: A, B, C, or D."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Question:\n{question}\n\n"
+                    f"Draft answer:\n{normalized_answer}\n\n"
+                    "Return only the single best option letter: A, B, C, or D."
+                ),
+            },
+        ]
+        with call_label("final_answer_repair"):
+            response = call_llm_api(
+                messages=repair_messages,
+                model_name=self.model_name,
+                api_base=self.api_base,
+                api_key=self.api_key,
+                api_version=self.api_version,
+                max_tokens=min(self.max_tokens, 32),
+                reasoning_effort="none",
+                seed=self.seed,
+                temperature=0.0,
+                timeout=min(self.timeout, 120),
+            )
+        repaired = extract_mcq_letter(str(response.choices[0].message.content or ""))
+        if self._is_single_option_letter(repaired):
+            return repaired.upper()
+        return normalized_answer
 
     def _call_decision(self, step: int):
         last_error = None
@@ -372,7 +442,7 @@ class VideoSeekAgent(BaseAgent):
                     TrajectoryStep(step_id=step + 1, thought=thought, action=logged_action, observation=observation)
                 )
                 if action.function_name == "answer":
-                    self.final_answer = outcome
+                    self.final_answer = self._repair_final_answer_if_needed(question, outcome)
                     break
                 self.messages.append(
                     {
