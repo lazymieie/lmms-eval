@@ -23,7 +23,7 @@ from typing import Any
 
 from loguru import logger as eval_logger
 
-from lmms_eval.models.simple.videoseek import _run_request_in_subprocess, _safe_int, _subtitle_path_for_video, _write_failure_artifacts
+from lmms_eval.models.simple.videoseek import _run_request_in_subprocess, _safe_int, _write_failure_artifacts
 from lmms_eval.tasks import TaskManager, get_task_dict
 from lmms_eval.tasks.videomme.utils import extract_characters_regex
 
@@ -223,10 +223,8 @@ def rerun_one(target: dict[str, Any], loaded_tasks: dict[str, Any], run_dir: Pat
     sample_dir.mkdir(parents=True, exist_ok=True)
 
     video_path = visuals[0]
-    subtitle_path = _subtitle_path_for_video(video_path)
     sample_request = {
         "video_path": video_path,
-        "subtitle_path": subtitle_path,
         "question": context,
         "output_dir": str(sample_dir),
         "config": agent_config,
