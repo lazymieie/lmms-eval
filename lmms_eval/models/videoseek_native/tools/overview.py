@@ -13,7 +13,6 @@ overview_tool = {
     "function": {
         "name": "overview",
         "description": "To get a structured video summary for the entire video.",
-        "strict": True,
         "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
     },
 }

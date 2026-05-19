@@ -562,6 +562,109 @@ def test_build_final_answer_messages_keeps_system_at_beginning(monkeypatch):
     assert messages[-1]["role"] == "user"
 
 
+def test_call_llm_api_normalizes_assistant_tool_call_arguments(monkeypatch):
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured["messages"] = kwargs["messages"]
+        message = types.SimpleNamespace(content="ok")
+        choice = types.SimpleNamespace(message=message, finish_reason="stop")
+        usage = types.SimpleNamespace(prompt_tokens=1, completion_tokens=1, reasoning_tokens=0)
+        return types.SimpleNamespace(choices=[choice], usage=usage)
+
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=fake_completion))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.utils",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    utils_module = importlib.import_module("lmms_eval.models.videoseek_native.utils")
+
+    response = utils_module.call_llm_api(
+        model_name="model",
+        api_base="http://localhost",
+        api_key="key",
+        api_version="",
+        max_tokens=64,
+        reasoning_effort="none",
+        seed=42,
+        temperature=0.0,
+        messages=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "skim",
+                            "arguments": "{\"query\": \"x\", \"start_time\": 0, \"end_time\": 10}",
+                        },
+                    }
+                ],
+            },
+        ],
+        tools=[],
+        tool_choice="auto",
+        timeout=30,
+    )
+
+    assert response.choices[0].message.content == "ok"
+    tool_arguments = captured["messages"][2]["tool_calls"][0]["function"]["arguments"]
+    assert isinstance(tool_arguments, dict)
+    assert tool_arguments["query"] == "x"
+    assert tool_arguments["start_time"] == 0
+
+
+def test_call_decision_uses_auto_tool_choice(monkeypatch):
+    monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.agent",
+        "lmms_eval.models.videoseek_native.tools",
+        "lmms_eval.models.videoseek_native.tools.answer",
+        "lmms_eval.models.videoseek_native.tools.focus",
+        "lmms_eval.models.videoseek_native.tools.overview",
+        "lmms_eval.models.videoseek_native.tools.skim",
+        "lmms_eval.models.videoseek_native.utils",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    agent_module = importlib.import_module("lmms_eval.models.videoseek_native.agent")
+    captured = {}
+
+    def fake_call_llm_api(**kwargs):
+        captured["tool_choice"] = kwargs.get("tool_choice")
+        captured["tools"] = kwargs.get("tools")
+        raise RuntimeError("stop after capture")
+
+    monkeypatch.setattr(agent_module, "call_llm_api", fake_call_llm_api)
+
+    agent = agent_module.VideoSeekAgent.__new__(agent_module.VideoSeekAgent)
+    agent.messages = [{"role": "system", "content": "system"}]
+    agent.model_name = "model"
+    agent.api_base = "http://localhost"
+    agent.api_key = "key"
+    agent.api_version = ""
+    agent.max_tokens = 1024
+    agent.reasoning_effort = "none"
+    agent.seed = 42
+    agent.temperature = 0.0
+    agent.timeout = 60
+    agent.decision_retry_attempts = 1
+    agent.decision_retry_backoff_s = 0.0
+    agent.tools = [{"type": "function", "function": {"name": "overview", "parameters": {"type": "object"}}}]
+
+    with pytest.raises(RuntimeError, match="stop after capture"):
+        agent._call_decision(0)
+
+    assert captured["tool_choice"] == "auto"
+    assert captured["tools"][0]["function"]["name"] == "overview"
+
+
 def test_repair_final_answer_if_needed_repairs_non_letter_mcq_output(monkeypatch):
     monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))

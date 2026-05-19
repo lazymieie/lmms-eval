@@ -6,7 +6,6 @@ answer_tool = {
     "function": {
         "name": "answer",
         "description": "Based on the given trajectory, generate the final answer to the question.",
-        "strict": True,
         "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
     },
 }

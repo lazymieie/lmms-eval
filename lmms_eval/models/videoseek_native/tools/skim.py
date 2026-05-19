@@ -12,7 +12,6 @@ skim_tool = {
     "function": {
         "name": "skim",
         "description": "To localize moments related to the query by scanning a longer time range with sparse frame sampling.",
-        "strict": True,
         "parameters": {
             "type": "object",
             "properties": {

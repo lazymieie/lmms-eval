@@ -323,7 +323,7 @@ class VideoSeekAgent(BaseAgent):
                         reasoning_effort=self.reasoning_effort,
                         seed=self.seed,
                         tools=self.tools,
-                        tool_choice="required",
+                        tool_choice="auto",
                         temperature=self.temperature,
                         timeout=self.timeout,
                     )

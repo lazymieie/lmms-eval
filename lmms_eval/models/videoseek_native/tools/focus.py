@@ -12,7 +12,6 @@ focus_tool = {
     "function": {
         "name": "focus",
         "description": "To verify fine visual details with dense inspection of a short clip.",
-        "strict": True,
         "parameters": {
             "type": "object",
             "properties": {

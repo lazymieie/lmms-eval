@@ -35,7 +35,6 @@ TOOLS = [
         "function": {
             "name": "overview",
             "description": "To get a structured video summary for the entire video.",
-            "strict": True,
             "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         },
     },
@@ -44,7 +43,6 @@ TOOLS = [
         "function": {
             "name": "skim",
             "description": "To localize moments related to the query by scanning a longer time range with sparse frame sampling.",
-            "strict": True,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -62,7 +60,6 @@ TOOLS = [
         "function": {
             "name": "focus",
             "description": "To verify fine visual details with dense inspection of a short clip.",
-            "strict": True,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -80,7 +77,6 @@ TOOLS = [
         "function": {
             "name": "answer",
             "description": "Based on the given trajectory, generate the final answer to the question.",
-            "strict": True,
             "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         },
     },
@@ -203,7 +199,7 @@ def main() -> int:
         "model": args.model,
         "messages": messages,
         "tools": TOOLS,
-        "tool_choice": "required",
+        "tool_choice": "auto",
         "temperature": args.temperature,
         "max_tokens": max_tokens,
         "seed": args.seed,

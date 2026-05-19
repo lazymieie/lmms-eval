@@ -1,3 +1,4 @@
+import json
 import os
 import random
 import re
@@ -161,6 +162,41 @@ def record_frame_event(event: dict) -> None:
         recorder["frame_calls"].append(event)
 
 
+def _normalize_tool_call_arguments(arguments):
+    if not isinstance(arguments, str):
+        return arguments
+    text = arguments.strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        return arguments
+
+
+def normalize_messages_for_tool_calling(messages: list) -> list:
+    normalized = []
+    for message in messages or []:
+        copied = dict(message)
+        tool_calls = copied.get("tool_calls")
+        if copied.get("role") == "assistant" and isinstance(tool_calls, list):
+            normalized_tool_calls = []
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    normalized_tool_calls.append(tool_call)
+                    continue
+                copied_tool_call = dict(tool_call)
+                function = copied_tool_call.get("function")
+                if isinstance(function, dict):
+                    copied_function = dict(function)
+                    copied_function["arguments"] = _normalize_tool_call_arguments(copied_function.get("arguments"))
+                    copied_tool_call["function"] = copied_function
+                normalized_tool_calls.append(copied_tool_call)
+            copied["tool_calls"] = normalized_tool_calls
+        normalized.append(copied)
+    return normalized
+
+
 @retry_with_exponential_backoff
 def call_llm_api(
     model_name: str,
@@ -181,9 +217,10 @@ def call_llm_api(
     response = None
     error = None
     try:
+        normalized_messages = normalize_messages_for_tool_calling(messages)
         request_kwargs = {
             "model": model_name,
-            "messages": messages,
+            "messages": normalized_messages,
             "api_base": api_base,
             "api_key": api_key,
             "api_version": api_version,
