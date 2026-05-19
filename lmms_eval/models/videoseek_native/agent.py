@@ -10,7 +10,7 @@ from loguru import logger as eval_logger
 
 from .core import Action, Observation, Trajectory, TrajectoryStep
 from .tools import DEFAULT_TOOL_REGISTRY
-from .utils import call_label, call_llm_api, extract_mcq_letter, extract_subtitles_from_question
+from .utils import build_final_answer_messages, call_label, call_llm_api, extract_mcq_letter, extract_subtitles_from_question
 
 
 class BaseAgent(ABC):
@@ -230,33 +230,14 @@ class VideoSeekAgent(BaseAgent):
         )
 
     def _call_final_answer(self, question: str, finish_reason: str) -> Trajectory:
-        self.messages.append(
-            {
-                "role": "system",
-                "content": (
-                    "You are now in the final answer stage. "
-                    "Do not call any tool. "
-                    "Do not output XML, JSON, code fences, or any tool-call syntax. "
-                    "Ignore earlier instructions that asked for tool calls. "
-                    "Answer directly using the requested final answer format only."
-                ),
-            }
-        )
-        self.messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "You have reached the final answer stage. "
-                    f"Question:\n{question}\n\n"
-                    "Provide the final answer now. "
-                    "Do not call any tool and do not propose further actions. "
-                    "If the question is a multiple-choice question, directly answer with only the option letter from the given choices."
-                ),
-            }
+        final_messages = build_final_answer_messages(
+            messages=self.messages,
+            question=question,
+            user_prefix="You have reached the final answer stage.",
         )
         with call_label("final_answer_fallback"):
             response = call_llm_api(
-                messages=self.messages,
+                messages=final_messages,
                 model_name=self.model_name,
                 api_base=self.api_base,
                 api_key=self.api_key,

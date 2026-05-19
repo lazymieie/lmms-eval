@@ -88,6 +88,15 @@ def _message_text(message: dict) -> str:
     return str(content)
 
 
+FINAL_ANSWER_SYSTEM_TEXT = (
+    "You are now in the final answer stage. "
+    "Do not call any tool. "
+    "Do not output XML, JSON, code fences, or any tool-call syntax. "
+    "Ignore earlier instructions that asked for tool calls. "
+    "Answer directly using the requested final answer format only."
+)
+
+
 def _infer_call_type(messages, tool_choice) -> str:
     explicit = get_call_label()
     if explicit:
@@ -227,6 +236,32 @@ def load_subtitles(subtitle_path: str):
             text = block[match.end() :].strip().replace("\n", " ")
             result.append({"start_time": round(start, 1), "end_time": round(end, 1), "subtitle": text})
     return result
+
+
+def build_final_answer_messages(messages: list, question: str, user_prefix: str) -> list:
+    prepared_messages = [dict(message) for message in (messages or [])]
+    if prepared_messages and prepared_messages[0].get("role") == "system":
+        merged_system = dict(prepared_messages[0])
+        merged_system["content"] = (
+            f"{str(merged_system.get('content', '')).rstrip()}\n\n{FINAL_ANSWER_SYSTEM_TEXT}"
+        ).strip()
+        prepared_messages[0] = merged_system
+    else:
+        prepared_messages.insert(0, {"role": "system", "content": FINAL_ANSWER_SYSTEM_TEXT})
+
+    prepared_messages.append(
+        {
+            "role": "user",
+            "content": (
+                f"{user_prefix}\n"
+                f"Question:\n{question}\n\n"
+                "Provide the final answer now. "
+                "Do not call any tool and do not propose further actions. "
+                "If this is a multiple-choice question, respond with only the single option letter from the given choices."
+            ),
+        }
+    )
+    return prepared_messages
 
 
 def convert_to_free_form_text_representation(history: list[dict], content_type: str = "caption") -> str:

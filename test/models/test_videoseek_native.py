@@ -529,11 +529,37 @@ def test_answer_tool_adds_explicit_no_tool_final_answer_constraints(monkeypatch)
     )
 
     assert result == "B"
-    assert captured["messages"][-2]["role"] == "system"
-    assert "Do not call any tool." in captured["messages"][-2]["content"]
-    assert "Ignore earlier instructions that asked for tool calls." in captured["messages"][-2]["content"]
+    assert captured["messages"][0]["role"] == "system"
+    assert "Do not call any tool." in captured["messages"][0]["content"]
+    assert "Ignore earlier instructions that asked for tool calls." in captured["messages"][0]["content"]
     assert captured["messages"][-1]["role"] == "user"
     assert "respond with only the single option letter" in captured["messages"][-1]["content"]
+
+
+def test_build_final_answer_messages_keeps_system_at_beginning(monkeypatch):
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.utils",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    utils_module = importlib.import_module("lmms_eval.models.videoseek_native.utils")
+
+    messages = utils_module.build_final_answer_messages(
+        messages=[
+            {"role": "system", "content": "base system"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": ""},
+        ],
+        question="Question?\nA. a\nB. b\nC. c\nD. d",
+        user_prefix="You have reached the final answer stage.",
+    )
+
+    assert [message["role"] for message in messages].count("system") == 1
+    assert messages[0]["role"] == "system"
+    assert "base system" in messages[0]["content"]
+    assert "Do not call any tool." in messages[0]["content"]
+    assert messages[-1]["role"] == "user"
 
 
 def test_repair_final_answer_if_needed_repairs_non_letter_mcq_output(monkeypatch):

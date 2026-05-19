@@ -1,4 +1,4 @@
-from ..utils import call_label, call_llm_api
+from ..utils import build_final_answer_messages, call_label, call_llm_api
 
 
 answer_tool = {
@@ -14,29 +14,10 @@ answer_tool = {
 
 def execute_answer(config: dict, parameters: dict) -> str:
     question = parameters["question"]
-    messages = list(parameters["messages"])
-    messages.append(
-        {
-            "role": "system",
-            "content": (
-                "You are now in the final answer stage. "
-                "Do not call any tool. "
-                "Do not output XML, JSON, code fences, or any tool-call syntax. "
-                "Ignore earlier instructions that asked for tool calls. "
-                "Answer directly using the requested final answer format only."
-            ),
-        }
-    )
-    messages.append(
-        {
-            "role": "user",
-            "content": (
-                f"Question:\n{question}\n\n"
-                "Provide the final answer now. "
-                "Do not call any tool and do not propose further actions. "
-                "If this is a multiple-choice question, respond with only the single option letter from the given choices."
-            ),
-        }
+    messages = build_final_answer_messages(
+        messages=parameters["messages"],
+        question=question,
+        user_prefix="You have reached the final answer stage.",
     )
     with call_label("answer"):
         response = call_llm_api(
