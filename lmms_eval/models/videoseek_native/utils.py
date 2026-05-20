@@ -3,12 +3,16 @@ import random
 import re
 import time
 from contextlib import contextmanager
+from itertools import count
+from threading import Lock
 from threading import local
 
 from litellm import completion
 
 
 _THREAD_STATE = local()
+_API_BASE_ROUND_ROBIN = count()
+_API_BASE_LOCK = Lock()
 
 
 def retry_with_exponential_backoff(
@@ -95,6 +99,38 @@ def _message_text(message: dict) -> str:
     return str(content)
 
 
+def normalize_api_bases(api_base) -> list[str]:
+    if api_base is None:
+        return []
+    if isinstance(api_base, (list, tuple)):
+        values = [str(value).strip() for value in api_base if str(value).strip()]
+        return values
+    raw = str(api_base).strip()
+    if not raw:
+        return []
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            import json
+
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(value).strip() for value in parsed if str(value).strip()]
+        except Exception:
+            pass
+    return [value.strip() for value in raw.split(",") if value.strip()]
+
+
+def select_api_base(api_base) -> str:
+    api_bases = normalize_api_bases(api_base)
+    if not api_bases:
+        return str(api_base or "").strip()
+    if len(api_bases) == 1:
+        return api_bases[0]
+    with _API_BASE_LOCK:
+        index = next(_API_BASE_ROUND_ROBIN) % len(api_bases)
+    return api_bases[index]
+
+
 FINAL_ANSWER_SYSTEM_TEXT = (
     "You are now in the final answer stage. "
     "Do not call any tool. "
@@ -172,7 +208,7 @@ def record_frame_event(event: dict) -> None:
 def call_llm_api(
     model_name: str,
     messages: list,
-    api_base: str,
+    api_base,
     api_key: str = None,
     api_version: str = None,
     max_tokens: int = 4096,
@@ -188,10 +224,11 @@ def call_llm_api(
     response = None
     error = None
     try:
+        selected_api_base = select_api_base(api_base)
         request_kwargs = {
             "model": model_name,
             "messages": messages,
-            "api_base": api_base,
+            "api_base": selected_api_base,
             "api_key": api_key,
             "api_version": api_version,
             "max_completion_tokens": max_tokens,

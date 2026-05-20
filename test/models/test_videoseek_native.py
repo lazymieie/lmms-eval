@@ -792,6 +792,42 @@ def test_focus_uses_tool_timeout_and_retry_attempts(monkeypatch):
     assert captured["_retry_max_retries"] == 3
 
 
+def test_call_llm_api_round_robins_across_multiple_api_bases(monkeypatch):
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.utils",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    utils_module = importlib.import_module("lmms_eval.models.videoseek_native.utils")
+    captured = []
+
+    def fake_completion(**kwargs):
+        captured.append(kwargs["api_base"])
+        message = types.SimpleNamespace(content="ok")
+        choice = types.SimpleNamespace(message=message, finish_reason="stop")
+        usage = types.SimpleNamespace(prompt_tokens=1, completion_tokens=1, reasoning_tokens=0)
+        return types.SimpleNamespace(choices=[choice], usage=usage)
+
+    monkeypatch.setattr(utils_module, "completion", fake_completion)
+
+    for _ in range(3):
+        utils_module.call_llm_api(
+            model_name="model",
+            messages=[{"role": "user", "content": "hello"}],
+            api_base="http://api-1/v1,http://api-2/v1",
+            api_key="key",
+            api_version="",
+            max_tokens=16,
+            reasoning_effort="none",
+            seed=42,
+            temperature=0.0,
+            timeout=30,
+        )
+
+    assert captured == ["http://api-1/v1", "http://api-2/v1", "http://api-1/v1"]
+
+
 def test_repair_final_answer_if_needed_repairs_non_letter_mcq_output(monkeypatch):
     monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
