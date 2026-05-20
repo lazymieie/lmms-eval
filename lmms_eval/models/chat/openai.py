@@ -21,7 +21,10 @@ from lmms_eval.models.model_utils.usage_metrics import (
     is_budget_exceeded,
     log_usage,
 )
-from lmms_eval.models.simple.openai import OpenAICompatible as OpenAICompatibleSimple
+from lmms_eval.models.simple.openai import (
+    OpenAICompatible as OpenAICompatibleSimple,
+    _extract_openai_reasoning_text,
+)
 from lmms_eval.protocol import ChatMessages
 
 VideoReader, _ = optional_import("decord", "VideoReader")
@@ -96,7 +99,10 @@ class OpenAICompatible(OpenAICompatibleSimple):
                 try:
                     response = self.client.chat.completions.create(**payload)
                     elapsed = time.time() - started_at
-                    response_text = response.choices[0].message.content
+                    message = response.choices[0].message
+                    response_text = message.content
+                    reasoning_text = _extract_openai_reasoning_text(message)
+                    finish_reason = getattr(response.choices[0], "finish_reason", None)
                     input_tokens = 0
                     output_tokens = 0
                     reasoning_tokens = 0
@@ -117,6 +123,12 @@ class OpenAICompatible(OpenAICompatibleSimple):
                         reasoning_tokens=reasoning_tokens,
                         source="model",
                     )
+                    generation_info = {
+                        "frames_used": frames_used,
+                        "finish_reason": finish_reason,
+                    }
+                    if reasoning_text:
+                        generation_info["reasoning"] = reasoning_text
                     return (
                         response_text,
                         local_index,
@@ -126,7 +138,7 @@ class OpenAICompatible(OpenAICompatibleSimple):
                         completion_tokens,
                         input_tokens,
                         reasoning_tokens,
-                        frames_used,
+                        generation_info,
                     )
                 except Exception as exc:
                     error_msg = str(exc)
@@ -141,7 +153,7 @@ class OpenAICompatible(OpenAICompatibleSimple):
             elapsed = time.time() - started_at
             error_preview = last_error_msg.replace("\n", " ")[:200]
             failure_content = f"[LMMS_EVAL_REQUEST_FAILED after {self.max_retries} retries] {error_preview}"
-            return failure_content, local_index, False, rate_limited, elapsed, 0, 0, 0, frames_used
+            return failure_content, local_index, False, rate_limited, elapsed, 0, 0, 0, {"frames_used": frames_used}
 
         def maybe_update_concurrency(force: bool = False) -> None:
             nonlocal current_concurrency
@@ -249,7 +261,7 @@ class OpenAICompatible(OpenAICompatibleSimple):
                         completion_tokens,
                         input_tokens,
                         reasoning_tokens,
-                        frames_used,
+                        generation_info,
                     ) = future.result()
                     in_flight.pop(future, None)
                     responses[local_index] = GenerationResult(
@@ -259,7 +271,7 @@ class OpenAICompatible(OpenAICompatibleSimple):
                             output_tokens=completion_tokens,
                             reasoning_tokens=reasoning_tokens,
                         ),
-                        generation_info={"frames_used": frames_used},
+                        generation_info=generation_info,
                     )
                     total_latency += elapsed
                     total_tokens += completion_tokens

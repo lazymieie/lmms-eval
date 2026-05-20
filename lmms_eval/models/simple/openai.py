@@ -63,6 +63,29 @@ def _normalize_openai_message_content(content) -> str:
     return str(content)
 
 
+def _extract_openai_reasoning_text(message) -> str:
+    if message is None:
+        return ""
+    reasoning = getattr(message, "reasoning", None) or getattr(message, "reasoning_content", None) or ""
+    if isinstance(reasoning, str):
+        return reasoning
+    if isinstance(reasoning, list):
+        text_parts = []
+        for part in reasoning:
+            if isinstance(part, str):
+                text_parts.append(part)
+                continue
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text" and isinstance(part.get("text"), str):
+                text_parts.append(part["text"])
+                continue
+            if isinstance(part.get("content"), str):
+                text_parts.append(part["content"])
+        return "".join(text_parts)
+    return str(reasoning)
+
+
 @register_model("openai")
 class OpenAICompatible(lmms):
     def __init__(
@@ -340,7 +363,10 @@ class OpenAICompatible(lmms):
             for attempt in range(self.max_retries):
                 try:
                     response = self.client.chat.completions.create(**payload)
-                    response_text = _normalize_openai_message_content(response.choices[0].message.content)
+                    message = response.choices[0].message
+                    response_text = _normalize_openai_message_content(message.content)
+                    reasoning_text = _extract_openai_reasoning_text(message)
+                    finish_reason = getattr(response.choices[0], "finish_reason", None)
                     token_counts = None
                     if hasattr(response, "usage") and response.usage:
                         log_usage(
@@ -357,7 +383,13 @@ class OpenAICompatible(lmms):
                             reasoning_tokens=(getattr(response.usage.completion_tokens_details, "reasoning_tokens", 0) or 0) if hasattr(response.usage, "completion_tokens_details") and response.usage.completion_tokens_details else 0,
                         )
                     latency = time.time() - started_at
-                    return response_text, local_index, True, rate_limited, latency, token_counts, frames_used
+                    generation_info = {
+                        "frames_used": frames_used,
+                        "finish_reason": finish_reason,
+                    }
+                    if reasoning_text:
+                        generation_info["reasoning"] = reasoning_text
+                    return response_text, local_index, True, rate_limited, latency, token_counts, generation_info
                 except Exception as exc:
                     error_msg = str(exc)
                     last_error_msg = error_msg
@@ -371,7 +403,7 @@ class OpenAICompatible(lmms):
             latency = time.time() - started_at
             error_preview = last_error_msg.replace("\n", " ")[:200]
             failure_content = f"[LMMS_EVAL_REQUEST_FAILED after {self.max_retries} retries] {error_preview}"
-            return failure_content, local_index, False, rate_limited, latency, None, frames_used
+            return failure_content, local_index, False, rate_limited, latency, None, {"frames_used": frames_used}
 
         def maybe_update_concurrency(force: bool = False) -> None:
             nonlocal current_concurrency
@@ -503,13 +535,13 @@ class OpenAICompatible(lmms):
                         rate_limited,
                         latency,
                         token_counts,
-                        frames_used,
+                        generation_info,
                     ) = future.result()
                     in_flight.pop(future, None)
                     reordered_responses[local_index] = GenerationResult(
                         text=response_text,
                         token_counts=token_counts,
-                        generation_info={"frames_used": frames_used},
+                        generation_info=generation_info,
                     )
                     if not success:
                         failed_requests += 1

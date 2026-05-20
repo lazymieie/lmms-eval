@@ -339,7 +339,10 @@ class AsyncOpenAIChat(lmms):
             payload["tool_choice"] = "auto"  # or "auto" for automatic tool selection
 
         response = await self.client.chat.completions.create(**payload)
-        last_response = response.choices[0].message.content or ""
+        message = response.choices[0].message
+        last_response = message.content or ""
+        reasoning_text = self._extract_reasoning_text(message)
+        finish_reason = getattr(response.choices[0], "finish_reason", None)
         # Extract usage metrics
         input_tokens, output_tokens, reasoning_tokens = await self._extract_usage_counts(response)
         total_input_tokens += input_tokens
@@ -410,12 +413,20 @@ class AsyncOpenAIChat(lmms):
                 reasoning_tokens=reasoning_tokens,
                 source="model",
             )
-            last_response = response.choices[0].message.content or ""
+            message = response.choices[0].message
+            last_response = message.content or ""
+            extra_reasoning = self._extract_reasoning_text(message)
+            if extra_reasoning:
+                reasoning_text = f"{reasoning_text}\n\n{extra_reasoning}".strip() if reasoning_text else extra_reasoning
+            finish_reason = getattr(response.choices[0], "finish_reason", finish_reason)
             try:
                 all_response += last_response
             except Exception as e:
                 all_response += str(e)
-        return all_response, idx, TokenCounts(input_tokens=total_input_tokens, output_tokens=total_output_tokens, reasoning_tokens=total_reasoning_tokens), {"frames_used": frames_used}
+        generation_info = {"frames_used": frames_used, "finish_reason": finish_reason}
+        if reasoning_text:
+            generation_info["reasoning"] = reasoning_text
+        return all_response, idx, TokenCounts(input_tokens=total_input_tokens, output_tokens=total_output_tokens, reasoning_tokens=total_reasoning_tokens), generation_info
 
     def generate_until(self, requests) -> List[GenerationResult]:
         results = []
