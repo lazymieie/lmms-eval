@@ -6,7 +6,9 @@ import tempfile
 import time
 import urllib.request
 import uuid
+from itertools import count
 from multiprocessing import cpu_count
+from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
 
 from accelerate import Accelerator, DistributedType
@@ -14,6 +16,7 @@ from dotenv import load_dotenv
 from loguru import logger as eval_logger
 from openai import AsyncOpenAI
 from tqdm import tqdm
+from urllib.parse import unquote
 
 from lmms_eval.api.instance import GenerationResult, Instance, TokenCounts
 from lmms_eval.api.model import lmms
@@ -38,6 +41,39 @@ VideoReader, _ = optional_import("decord", "VideoReader")
 cpu, _ = optional_import("decord", "cpu")
 
 load_dotenv(verbose=True)
+
+
+_API_BASE_ROUND_ROBIN = count()
+_API_BASE_LOCK = Lock()
+
+
+def normalize_api_bases(api_base) -> list[str]:
+    if api_base is None:
+        return []
+    if isinstance(api_base, (list, tuple)):
+        return [str(value).strip() for value in api_base if str(value).strip()]
+    raw = str(api_base).strip()
+    if not raw:
+        return []
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(value).strip() for value in parsed if str(value).strip()]
+        except Exception:
+            pass
+    return [value.strip() for value in raw.split(",") if value.strip()]
+
+
+def select_api_base(api_base) -> str:
+    api_bases = normalize_api_bases(api_base)
+    if not api_bases:
+        return str(api_base or "").strip()
+    if len(api_bases) == 1:
+        return api_bases[0]
+    with _API_BASE_LOCK:
+        index = next(_API_BASE_ROUND_ROBIN) % len(api_bases)
+    return api_bases[index]
 
 
 @register_model("async_openai")
@@ -105,9 +141,18 @@ class AsyncOpenAIChat(lmms):
         self.work_dir = work_dir if work_dir is not None else tempfile.mkdtemp()
         self.fps = fps
         self.nframes = nframes
-        self.base_url = base_url if base_url is not None else os.getenv("OPENAI_API_BASE")
+        raw_base_url = base_url if base_url is not None else os.getenv("OPENAI_API_BASE")
+        if raw_base_url and "%" in str(raw_base_url):
+            raw_base_url = unquote(str(raw_base_url))
+        self.api_bases = normalize_api_bases(raw_base_url)
+        self.base_url = self.api_bases[0] if self.api_bases else raw_base_url
         self.api_key = api_key if api_key is not None else os.getenv("OPENAI_API_KEY")
-        self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=timeout)
+        if self.api_bases:
+            self.clients_by_base_url = {api_base: AsyncOpenAI(api_key=self.api_key, base_url=api_base, timeout=timeout) for api_base in self.api_bases}
+            self.client = self.clients_by_base_url[self.api_bases[0]]
+        else:
+            self.clients_by_base_url = {str(self.base_url): AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=timeout)}
+            self.client = self.clients_by_base_url[str(self.base_url)]
         self.max_pixels = max_pixels
         self.min_pixels = min_pixels
         self.max_frames = max_frames
@@ -189,23 +234,33 @@ class AsyncOpenAIChat(lmms):
             extra_body["thinking_token_budget"] = self.thinking_token_budget
         return extra_body or None
 
-    def _tokenize_endpoint_url(self) -> Optional[str]:
-        if not self.base_url:
+    def _select_client(self) -> tuple[AsyncOpenAI, Optional[str]]:
+        selected_base_url = select_api_base(self.api_bases or self.base_url)
+        client = self.clients_by_base_url.get(selected_base_url)
+        if client is None:
+            client = self.client
+            selected_base_url = self.base_url
+        return client, selected_base_url
+
+    def _tokenize_endpoint_url(self, base_url: Optional[str] = None) -> Optional[str]:
+        selected_base_url = base_url or self.base_url
+        if not selected_base_url:
             return None
-        base_url = self.base_url.rstrip("/")
-        if base_url.endswith("/v1"):
-            base_url = base_url[:-3]
-        return f"{base_url}/tokenize"
+        normalized_base_url = selected_base_url.rstrip("/")
+        if normalized_base_url.endswith("/v1"):
+            normalized_base_url = normalized_base_url[:-3]
+        return f"{normalized_base_url}/tokenize"
 
     def _extract_reasoning_text(self, message) -> str:
         return getattr(message, "reasoning", None) or getattr(message, "reasoning_content", None) or ""
 
-    async def _count_text_tokens(self, text: str) -> Optional[int]:
+    async def _count_text_tokens(self, text: str, base_url: Optional[str] = None) -> Optional[int]:
         if not text:
             return 0
-        if text in self._token_count_cache:
-            return self._token_count_cache[text]
-        tokenize_url = self._tokenize_endpoint_url()
+        cache_key = f"{base_url or self.base_url}::{text}"
+        if cache_key in self._token_count_cache:
+            return self._token_count_cache[cache_key]
+        tokenize_url = self._tokenize_endpoint_url(base_url)
         if tokenize_url is None:
             return None
 
@@ -228,10 +283,10 @@ class AsyncOpenAIChat(lmms):
             eval_logger.debug(f"Failed to count tokens via /tokenize: {exc}")
             return None
         if count is not None:
-            self._token_count_cache[text] = count
+            self._token_count_cache[cache_key] = count
         return count
 
-    async def _extract_usage_counts(self, response) -> Tuple[int, int, int]:
+    async def _extract_usage_counts(self, response, base_url: Optional[str] = None) -> Tuple[int, int, int]:
         input_tokens = 0
         output_tokens = 0
         reasoning_tokens = 0
@@ -256,7 +311,7 @@ class AsyncOpenAIChat(lmms):
                     reasoning_tokens = completion_tokens
                     output_tokens = 0
                 else:
-                    visible_output_tokens = await self._count_text_tokens(content_text)
+                    visible_output_tokens = await self._count_text_tokens(content_text, base_url=base_url)
                     if visible_output_tokens is not None:
                         output_tokens = min(completion_tokens, visible_output_tokens)
                         reasoning_tokens = max(0, completion_tokens - output_tokens)
@@ -338,13 +393,14 @@ class AsyncOpenAIChat(lmms):
             payload["tools"] = functions
             payload["tool_choice"] = "auto"  # or "auto" for automatic tool selection
 
-        response = await self.client.chat.completions.create(**payload)
+        client, selected_api_base = self._select_client()
+        response = await client.chat.completions.create(**payload)
         message = response.choices[0].message
         last_response = message.content or ""
         reasoning_text = self._extract_reasoning_text(message)
         finish_reason = getattr(response.choices[0], "finish_reason", None)
         # Extract usage metrics
-        input_tokens, output_tokens, reasoning_tokens = await self._extract_usage_counts(response)
+        input_tokens, output_tokens, reasoning_tokens = await self._extract_usage_counts(response, base_url=selected_api_base)
         total_input_tokens += input_tokens
         total_output_tokens += output_tokens
         total_reasoning_tokens += reasoning_tokens
@@ -399,9 +455,9 @@ class AsyncOpenAIChat(lmms):
             }
             if extra_body is not None:
                 followup_payload["extra_body"] = extra_body
-            response = await self.client.chat.completions.create(**followup_payload)
+            response = await client.chat.completions.create(**followup_payload)
             # Extract usage metrics
-            input_tokens, output_tokens, reasoning_tokens = await self._extract_usage_counts(response)
+            input_tokens, output_tokens, reasoning_tokens = await self._extract_usage_counts(response, base_url=selected_api_base)
             total_input_tokens += input_tokens
             total_output_tokens += output_tokens
             total_reasoning_tokens += reasoning_tokens

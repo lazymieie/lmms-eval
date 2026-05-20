@@ -169,10 +169,45 @@ def backup_existing_artifacts(sample_dir: Path) -> None:
     backup_dir = sample_dir / "_backup_before_rerun"
     backup_dir.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    for filename in ("prediction.json", "trajectory.json", "metrics.json"):
-        source = sample_dir / filename
-        if source.is_file():
-            shutil.copy2(source, backup_dir / f"{timestamp}_{filename}")
+    artifact_patterns = [
+        "prediction.json",
+        "trajectory.json",
+        "metrics.json",
+        "timeout_snapshot.json",
+        "timeout_traceback.txt",
+        "timeout_snapshot_error.txt",
+        "decision_error_debug.jsonl",
+        "decision_error_step*.json",
+        "decision_empty_actions_step*.json",
+    ]
+    copied_paths: set[Path] = set()
+    for pattern in artifact_patterns:
+        for source in sample_dir.glob(pattern):
+            if not source.is_file() or source in copied_paths:
+                continue
+            shutil.copy2(source, backup_dir / f"{timestamp}_{source.name}")
+            copied_paths.add(source)
+
+
+def cleanup_stale_artifacts(sample_dir: Path) -> None:
+    artifact_patterns = [
+        "prediction.json",
+        "trajectory.json",
+        "metrics.json",
+        "timeout_snapshot.json",
+        "timeout_traceback.txt",
+        "timeout_snapshot_error.txt",
+        "decision_error_debug.jsonl",
+        "decision_error_step*.json",
+        "decision_empty_actions_step*.json",
+    ]
+    removed_paths: set[Path] = set()
+    for pattern in artifact_patterns:
+        for target in sample_dir.glob(pattern):
+            if not target.is_file() or target in removed_paths:
+                continue
+            target.unlink(missing_ok=True)
+            removed_paths.add(target)
 
 
 def rebuild_run_summary(run_dir: Path) -> None:
@@ -242,6 +277,7 @@ def rerun_one(target: dict[str, Any], loaded_tasks: dict[str, Any], run_dir: Pat
     sample_dir = Path(target["sample_dir"])
     if sample_dir.exists():
         backup_existing_artifacts(sample_dir)
+        cleanup_stale_artifacts(sample_dir)
     sample_dir.mkdir(parents=True, exist_ok=True)
 
     video_path = visuals[0]
