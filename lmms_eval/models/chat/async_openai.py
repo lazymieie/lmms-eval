@@ -62,7 +62,8 @@ def normalize_api_bases(api_base) -> list[str]:
                 return [str(value).strip() for value in parsed if str(value).strip()]
         except Exception:
             pass
-    return [value.strip() for value in raw.split(",") if value.strip()]
+    delimiter = "|" if "|" in raw else ","
+    return [value.strip() for value in raw.split(delimiter) if value.strip()]
 
 
 def select_api_base(api_base) -> str:

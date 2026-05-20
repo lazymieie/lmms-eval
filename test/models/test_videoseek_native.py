@@ -828,6 +828,22 @@ def test_call_llm_api_round_robins_across_multiple_api_bases(monkeypatch):
     assert captured == ["http://api-1/v1", "http://api-2/v1", "http://api-1/v1"]
 
 
+def test_normalize_api_bases_supports_pipe_delimiter(monkeypatch):
+    monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
+    for module_name in [
+        "lmms_eval.models.videoseek_native.utils",
+        "lmms_eval.models.chat.async_openai",
+    ]:
+        sys.modules.pop(module_name, None)
+
+    videoseek_utils = importlib.import_module("lmms_eval.models.videoseek_native.utils")
+    async_openai_module = importlib.import_module("lmms_eval.models.chat.async_openai")
+
+    expected = ["http://api-1/v1", "http://api-2/v1", "http://api-3/v1"]
+    assert videoseek_utils.normalize_api_bases("http://api-1/v1|http://api-2/v1|http://api-3/v1") == expected
+    assert async_openai_module.normalize_api_bases("http://api-1/v1|http://api-2/v1|http://api-3/v1") == expected
+
+
 def test_repair_final_answer_if_needed_repairs_non_letter_mcq_output(monkeypatch):
     monkeypatch.setitem(sys.modules, "decord", types.SimpleNamespace(VideoReader=object))
     monkeypatch.setitem(sys.modules, "litellm", types.SimpleNamespace(completion=lambda **kwargs: None))
