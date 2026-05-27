@@ -26,6 +26,19 @@ class TestRerunVideoSeekNativeFailures(unittest.TestCase):
             self.assertEqual(status, "invalid_prediction")
             self.assertIn("Whitehead", detail)
 
+    def test_classify_existing_sample_accepts_videomme_v2_choices_up_to_h(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sample_dir = Path(tmpdir)
+            (sample_dir / "prediction.json").write_text(
+                json.dumps({"prediction": "H"}),
+                encoding="utf-8",
+            )
+
+            status, detail = tool.classify_existing_sample(sample_dir, task_name="videomme_v2")
+
+            self.assertEqual(status, "ok")
+            self.assertEqual(detail, "H")
+
     def test_discover_existing_samples_parses_native_dirs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             run_dir = Path(tmpdir)

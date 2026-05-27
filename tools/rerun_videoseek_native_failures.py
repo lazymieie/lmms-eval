@@ -28,6 +28,13 @@ from lmms_eval.tasks import TaskManager, get_task_dict
 from lmms_eval.tasks.videomme.utils import extract_characters_regex
 
 
+def valid_choices_for_task(task_name: str | None) -> set[str]:
+    normalized = str(task_name or "")
+    if normalized.startswith("videomme_v2"):
+        return {"A", "B", "C", "D", "E", "F", "G", "H"}
+    return {"A", "B", "C", "D"}
+
+
 def load_json(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -77,7 +84,7 @@ def load_task_docs(task_names: list[str], split: str) -> dict[str, Any]:
     return loaded
 
 
-def classify_existing_sample(sample_dir: Path) -> tuple[str, str]:
+def classify_existing_sample(sample_dir: Path, task_name: str | None = None) -> tuple[str, str]:
     prediction_path = sample_dir / "prediction.json"
     if not prediction_path.is_file():
         return "missing_prediction_file", "prediction.json is missing"
@@ -87,7 +94,7 @@ def classify_existing_sample(sample_dir: Path) -> tuple[str, str]:
         return "invalid_prediction_json", str(exc)
     raw_prediction = str(payload.get("prediction", "") or "")
     pred_answer = extract_characters_regex(raw_prediction)
-    if pred_answer not in {"A", "B", "C", "D"}:
+    if pred_answer not in valid_choices_for_task(task_name):
         return "invalid_prediction", raw_prediction[:200]
     return "ok", pred_answer
 
@@ -122,7 +129,7 @@ def build_targets(
                 )
                 continue
 
-            status, detail = classify_existing_sample(Path(sample["sample_dir"]))
+            status, detail = classify_existing_sample(Path(sample["sample_dir"]), task_name=sample["task"])
             if status != "ok":
                 targets.append({**sample, "reason": status, "reason_detail": detail})
     return targets
