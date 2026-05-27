@@ -30,14 +30,14 @@ VIDEOSEEK_MODEL_VERSION="openai/${MODEL_VERSION}"
 export HF_DATASETS_OFFLINE=1
 export HF_HOME="/gemini/space/zyf"
 export HF_DATASETS_CACHE="/gemini/space/gjx/lmms-eval/.cache/hf_datasets"
-TASKS="${TASKS:-videomme_long}"
+TASKS="${TASKS:-videomme_v2}"
 DATASET_PATH="/gemini/space/zyf/datasets/lmms-lab/Video-MME"
 
 BATCH_SIZE="${BATCH_SIZE:-32}"
-NUM_WORKERS="${NUM_WORKERS:-16}"
+NUM_WORKERS="${NUM_WORKERS:-32}"
 # LIMIT="${LIMIT:---limit 10}"
 LIMIT="${LIMIT:-}"
-OUTPUT_PATH="${OUTPUT_PATH:-./logs/videoseek_qwen35_27b_videommelong_wo_subtitle}"
+OUTPUT_PATH="${OUTPUT_PATH:-./logs/videoseek_qwen35_27b_videommev2}"
 
 LOG_SUFFIX="${LOG_SUFFIX:-videoseek_qwen35_27b_api_$(date +%Y%m%d_%H%M%S)}"
 RUN_NAME="${RUN_NAME:-videoseek_qwen35_27b_$(date +%Y%m%d_%H%M%S)}"

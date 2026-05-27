@@ -1,23 +1,12 @@
-#!/bin/bash
-
-# ============================================================
-# VideoMME Long Evaluation Script via vLLM API
-# ============================================================
-# Directly evaluates Qwen3.5-27B on VideoMME-Long with subtitles
-# and a fixed 29-frame budget per sample, without VideoSeek.
-#
-# Usage:
-#   bash evaluation_scripts/vllm_qwen35/eval_videomme_long_api_27B_frames29.sh [PORT]
-# ============================================================
 
 set -euo pipefail
 
 # ----------------------
 # Configuration
 # ----------------------
-PORT="${1:-5590}"
-HOST="${HOST:-10.233.27.148}"
-API_BASE="http://${HOST}:${PORT}/v1"
+
+# API_BASE="http://10.233.114.36:8000/v1|http://10.233.92.52:8000/v1|http://127.0.0.1:8000/v1|http://10.233.48.11:5590/v1"
+API_BASE="http://10.233.48.11:5590/v1"
 API_KEY="${API_KEY:-any}"
 MODEL_VERSION="${MODEL_VERSION:-Qwen3.5-27B}"
 
@@ -25,22 +14,23 @@ MODEL_VERSION="${MODEL_VERSION:-Qwen3.5-27B}"
 export HF_DATASETS_OFFLINE=1
 export HF_HOME="${HF_HOME:-/gemini/space/zyf}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-/gemini/space/gjx/lmms-eval/.cache/hf_datasets}"
-TASKS="${TASKS:-videomme_long_w_subtitle}"
+TASKS="${TASKS:-videomme_long}"
 DATASET_PATH="${DATASET_PATH:-/gemini/space/zyf/datasets/lmms-lab/Video-MME}"
 
 # Evaluation Configuration
-BATCH_SIZE="${BATCH_SIZE:-4}"
+BATCH_SIZE="${BATCH_SIZE:-8}"
+# LIMIT="${LIMIT:---limit 8}"
 LIMIT="${LIMIT:-}"
-OUTPUT_PATH="${OUTPUT_PATH:-./logs/qwen35_27b_videomme_long_w_subtitle_api_frames29}"
-LOG_SUFFIX="${LOG_SUFFIX:-qwen35_27b_videomme_long_w_subtitle_api_frames29_$(date +%Y%m%d_%H%M%S)}"
+OUTPUT_PATH="${OUTPUT_PATH:-./logs/qwen35_27b_videomme_long_wo_subtitle_api_frames165_sglang}"
+LOG_SUFFIX="${LOG_SUFFIX:-qwen35_27b_videomme_long_wo_subtitle_api_frames165_$(date +%Y%m%d_%H%M%S)}"
 VERBOSITY="${VERBOSITY:-DEBUG}"
 
 # Model / Sampling Args
-NFRAMES="${NFRAMES:-29}"
-NUM_CPUS="${NUM_CPUS:-4}"
-TIMEOUT="${TIMEOUT:-600}"
+NFRAMES="${NFRAMES:-165}"
+NUM_CPUS="${NUM_CPUS:-8}"
+TIMEOUT="${TIMEOUT:-1800}"
 MAX_RETRIES="${MAX_RETRIES:-8}"
-MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-65536}"
+MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-128536}"
 TEMPERATURE="${TEMPERATURE:-0}"
 
 # ----------------------
@@ -52,11 +42,15 @@ echo "=============================================="
 echo ""
 echo "Checking server health..."
 
-if ! curl -s "${API_BASE}/../health" >/dev/null 2>&1; then
-    echo "Error: vLLM server is not running at ${API_BASE}"
-    echo "Please start the server first."
+IFS='|' read -r -a API_BASES <<< "${API_BASE}"
+for base in "${API_BASES[@]}"; do
+  health_url="${base%/v1}/health"
+  if ! curl -s "$health_url" >/dev/null 2>&1; then
+    echo "Error: vLLM server is not running at $base"
     exit 1
-fi
+  fi
+done
+
 
 echo "Server is running at ${API_BASE}"
 echo ""

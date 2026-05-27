@@ -1,8 +1,8 @@
 dataset_path: parquet
 dataset_kwargs:
-  cache_dir: /gemini/space/gjx/lmms-eval/datasets/videomme_v2
+  cache_dir: /gemini/space/datasets/gjx/videomme_v2
   data_files:
-    test: /gemini/space/gjx/lmms-eval/datasets/videomme_v2/test.parquet
+    test: /gemini/space/datasets/gjx/videomme_v2/test.parquet
   video: True
 test_split: test
 output_type: generate_until
