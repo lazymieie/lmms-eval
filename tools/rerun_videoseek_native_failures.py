@@ -25,7 +25,8 @@ from loguru import logger as eval_logger
 
 from lmms_eval.models.simple.videoseek import _run_request_in_subprocess, _safe_int, _write_failure_artifacts
 from lmms_eval.tasks import TaskManager, get_task_dict
-from lmms_eval.tasks.videomme.utils import extract_characters_regex
+from lmms_eval.tasks.videomme.utils import extract_characters_regex as extract_videomme_answer
+from lmms_eval.tasks.videomme_v2.utils import extract_characters_regex as extract_videomme_v2_answer
 
 
 def valid_choices_for_task(task_name: str | None) -> set[str]:
@@ -33,6 +34,13 @@ def valid_choices_for_task(task_name: str | None) -> set[str]:
     if normalized.startswith("videomme_v2"):
         return {"A", "B", "C", "D", "E", "F", "G", "H"}
     return {"A", "B", "C", "D"}
+
+
+def extract_prediction_answer(raw_prediction: str, task_name: str | None = None) -> str:
+    normalized = str(task_name or "")
+    if normalized.startswith("videomme_v2"):
+        return extract_videomme_v2_answer(raw_prediction)
+    return extract_videomme_answer(raw_prediction)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -93,7 +101,7 @@ def classify_existing_sample(sample_dir: Path, task_name: str | None = None) -> 
     except Exception as exc:
         return "invalid_prediction_json", str(exc)
     raw_prediction = str(payload.get("prediction", "") or "")
-    pred_answer = extract_characters_regex(raw_prediction)
+    pred_answer = extract_prediction_answer(raw_prediction, task_name=task_name)
     if pred_answer not in valid_choices_for_task(task_name):
         return "invalid_prediction", raw_prediction[:200]
     return "ok", pred_answer
