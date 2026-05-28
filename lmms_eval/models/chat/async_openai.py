@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -234,6 +235,62 @@ class AsyncOpenAIChat(lmms):
         if self.thinking_token_budget is not None:
             extra_body["thinking_token_budget"] = self.thinking_token_budget
         return extra_body or None
+
+    @staticmethod
+    def _sanitize_live_component(value: object, fallback: str = "item", max_len: int = 80) -> str:
+        raw = str(value).strip()
+        if not raw:
+            return fallback
+        sanitized = re.sub(r"[^\w.-]+", "_", raw).strip("._")
+        if not sanitized:
+            sanitized = fallback
+        return sanitized[:max_len]
+
+    def _get_live_sample_dir(self, task_name: str, doc_id: object) -> Optional[str]:
+        live_root = getattr(self, "_live_sample_output_dir", None)
+        if not live_root:
+            return None
+        task_component = self._sanitize_live_component(task_name, fallback="task")
+        doc_component = self._sanitize_live_component(doc_id, fallback="doc")
+        return os.path.join(live_root, f"{task_component}_doc{doc_component}_rank{self.rank:03d}")
+
+    def _write_live_response_file(
+        self,
+        request: Instance,
+        request_index: int,
+        response_text: str,
+        token_counts: TokenCounts,
+        generation_info: Dict[str, Any],
+        success: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        live_root = getattr(self, "_live_sample_output_dir", None)
+        if not live_root:
+            return
+        _, _, _, doc_id, task, _ = request.args
+        sample_dir = self._get_live_sample_dir(task_name=str(task), doc_id=doc_id)
+        if sample_dir is None:
+            return
+        os.makedirs(sample_dir, exist_ok=True)
+        payload = {
+            "task_name": str(task),
+            "doc_id": doc_id,
+            "request_index": request_index,
+            "rank": self.rank,
+            "success": success,
+            "response": response_text,
+            "token_counts": token_counts.to_dict(),
+            "generation_info": generation_info,
+            "error": error,
+            "written_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        final_path = os.path.join(sample_dir, f"response_{request_index:06d}.json")
+        tmp_path = f"{final_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, final_path)
 
     def _select_client(self) -> tuple[AsyncOpenAI, Optional[str]]:
         selected_base_url = select_api_base(self.api_bases or self.base_url)
@@ -551,6 +608,14 @@ class AsyncOpenAIChat(lmms):
                 for attempt in range(self.max_retries):
                     try:
                         content, original_idx, token_counts, generation_info = await self.maybe_forward_with_tool(req, idx)
+                        self._write_live_response_file(
+                            request=req,
+                            request_index=idx,
+                            response_text=content,
+                            token_counts=token_counts,
+                            generation_info=generation_info,
+                            success=True,
+                        )
                         elapsed = time.time() - started_at
                         return content, original_idx, token_counts, generation_info, True, rate_limited, elapsed
                     except Exception as exc:
@@ -566,6 +631,15 @@ class AsyncOpenAIChat(lmms):
                 elapsed = time.time() - started_at
                 error_preview = last_error_msg.replace("\n", " ")[:200]
                 failure_content = f"[LMMS_EVAL_REQUEST_FAILED after {self.max_retries} retries] {error_preview}"
+                self._write_live_response_file(
+                    request=req,
+                    request_index=idx,
+                    response_text="",
+                    token_counts=TokenCounts(),
+                    generation_info={"frames_used": 0, "finish_reason": "error"},
+                    success=False,
+                    error=error_preview,
+                )
                 return failure_content, idx, TokenCounts(), {"frames_used": 0}, False, rate_limited, elapsed
 
             failed_requests = 0

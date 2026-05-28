@@ -235,15 +235,12 @@ def _write_live_sample_file(live_sample_output_dir: Optional[str], task_name: st
         return
     task_component = _sanitize_filename_component(task_name, fallback="task")
     doc_component = _sanitize_filename_component(example.get("doc_id"), fallback="doc")
-    doc_hash = str(example.get("doc_hash", ""))[:8] or "nohash"
     filter_component = _sanitize_filename_component(filter_key, fallback="default")
     sample_dir_name = f"{task_component}_doc{doc_component}_rank{rank:03d}"
-    if filter_component not in {"default", "none"}:
-        sample_dir_name += f"_{filter_component}"
-    sample_dir_name += f"_{doc_hash}"
     target_dir = os.path.join(live_sample_output_dir, sample_dir_name)
     os.makedirs(target_dir, exist_ok=True)
-    final_path = os.path.join(target_dir, "sample.json")
+    sample_filename = "sample.json" if filter_component in {"default", "none"} else f"sample_{filter_component}.json"
+    final_path = os.path.join(target_dir, sample_filename)
     tmp_path = f"{final_path}.tmp"
     payload = _prepare_live_sample_record(example=example, task_name=task_name, filter_key=filter_key, rank=rank)
     with open(tmp_path, "w", encoding="utf-8") as handle:
@@ -568,6 +565,7 @@ def simple_evaluate(
             model_name=evaluation_tracker.general_config_tracker.model_name,
             task_names=list(task_dict.keys()),
         )
+        setattr(lm, "_live_sample_output_dir", live_sample_output_dir)
 
     eval_succeeded = False
     try:
