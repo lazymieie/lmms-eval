@@ -394,16 +394,16 @@ class AsyncOpenAIChat(lmms):
         payload["temperature"] = gen_kwargs["temperature"]
         if gen_kwargs["top_p"] is not None:
             payload["top_p"] = gen_kwargs["top_p"]
-        if gen_kwargs["top_k"] is not None:
-            payload["top_k"] = gen_kwargs["top_k"]
-        if gen_kwargs["min_p"] is not None:
-            payload["min_p"] = gen_kwargs["min_p"]
         if gen_kwargs["presence_penalty"] is not None:
             payload["presence_penalty"] = gen_kwargs["presence_penalty"]
+        extra_body = dict(self._build_extra_body() or {})
+        if gen_kwargs["top_k"] is not None:
+            extra_body["top_k"] = gen_kwargs["top_k"]
+        if gen_kwargs["min_p"] is not None:
+            extra_body["min_p"] = gen_kwargs["min_p"]
         if gen_kwargs["repetition_penalty"] is not None:
-            payload["repetition_penalty"] = gen_kwargs["repetition_penalty"]
-        extra_body = self._build_extra_body()
-        if extra_body is not None:
+            extra_body["repetition_penalty"] = gen_kwargs["repetition_penalty"]
+        if extra_body:
             payload["extra_body"] = extra_body
 
         if self.mcp_client is not None:
@@ -474,16 +474,17 @@ class AsyncOpenAIChat(lmms):
             }
             if gen_kwargs["top_p"] is not None:
                 followup_payload["top_p"] = gen_kwargs["top_p"]
-            if gen_kwargs["top_k"] is not None:
-                followup_payload["top_k"] = gen_kwargs["top_k"]
-            if gen_kwargs["min_p"] is not None:
-                followup_payload["min_p"] = gen_kwargs["min_p"]
             if gen_kwargs["presence_penalty"] is not None:
                 followup_payload["presence_penalty"] = gen_kwargs["presence_penalty"]
+            followup_extra_body = dict(extra_body or {})
+            if gen_kwargs["top_k"] is not None:
+                followup_extra_body["top_k"] = gen_kwargs["top_k"]
+            if gen_kwargs["min_p"] is not None:
+                followup_extra_body["min_p"] = gen_kwargs["min_p"]
             if gen_kwargs["repetition_penalty"] is not None:
-                followup_payload["repetition_penalty"] = gen_kwargs["repetition_penalty"]
-            if extra_body is not None:
-                followup_payload["extra_body"] = extra_body
+                followup_extra_body["repetition_penalty"] = gen_kwargs["repetition_penalty"]
+            if followup_extra_body:
+                followup_payload["extra_body"] = followup_extra_body
             response = await client.chat.completions.create(**followup_payload)
             # Extract usage metrics
             input_tokens, output_tokens, reasoning_tokens = await self._extract_usage_counts(response, base_url=selected_api_base)
