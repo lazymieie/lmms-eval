@@ -230,6 +230,16 @@ def _prepare_live_sample_record(example: dict, task_name: str, filter_key: str, 
     return sample
 
 
+def _stringify_live_response(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "\n\n".join(_stringify_live_response(item) for item in value)
+    return str(value)
+
+
 def _write_live_sample_file(live_sample_output_dir: Optional[str], task_name: str, filter_key: str, rank: int, example: dict) -> None:
     if not live_sample_output_dir:
         return
@@ -248,6 +258,22 @@ def _write_live_sample_file(live_sample_output_dir: Optional[str], task_name: st
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(tmp_path, final_path)
+
+    raw_response_path = os.path.join(target_dir, "raw_response.txt")
+    raw_response_tmp_path = f"{raw_response_path}.tmp"
+    with open(raw_response_tmp_path, "w", encoding="utf-8") as handle:
+        handle.write(_stringify_live_response(payload.get("resps")))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(raw_response_tmp_path, raw_response_path)
+
+    filtered_response_path = os.path.join(target_dir, "filtered_response.txt")
+    filtered_response_tmp_path = f"{filtered_response_path}.tmp"
+    with open(filtered_response_tmp_path, "w", encoding="utf-8") as handle:
+        handle.write(_stringify_live_response(payload.get("filtered_resps")))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(filtered_response_tmp_path, filtered_response_path)
 
 
 def _initialize_live_sample_output_dir(

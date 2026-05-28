@@ -272,6 +272,9 @@ class AsyncOpenAIChat(lmms):
         if sample_dir is None:
             return
         os.makedirs(sample_dir, exist_ok=True)
+        reasoning_text = ""
+        if isinstance(generation_info, dict):
+            reasoning_text = str(generation_info.get("reasoning", "") or "")
         payload = {
             "task_name": str(task),
             "doc_id": doc_id,
@@ -279,6 +282,7 @@ class AsyncOpenAIChat(lmms):
             "rank": self.rank,
             "success": success,
             "response": response_text,
+            "reasoning": reasoning_text,
             "token_counts": token_counts.to_dict(),
             "generation_info": generation_info,
             "error": error,
@@ -291,6 +295,23 @@ class AsyncOpenAIChat(lmms):
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_path, final_path)
+
+        output_txt_path = os.path.join(sample_dir, "output.txt")
+        output_tmp_path = f"{output_txt_path}.tmp"
+        with open(output_tmp_path, "w", encoding="utf-8") as handle:
+            handle.write(response_text or "")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(output_tmp_path, output_txt_path)
+
+        if reasoning_text:
+            reasoning_txt_path = os.path.join(sample_dir, "reasoning.txt")
+            reasoning_tmp_path = f"{reasoning_txt_path}.tmp"
+            with open(reasoning_tmp_path, "w", encoding="utf-8") as handle:
+                handle.write(reasoning_text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(reasoning_tmp_path, reasoning_txt_path)
 
     def _select_client(self) -> tuple[AsyncOpenAI, Optional[str]]:
         selected_base_url = select_api_base(self.api_bases or self.base_url)
