@@ -202,6 +202,57 @@ def _collect_input_media(doc: dict, request_args: list) -> list[str]:
     return sources
 
 
+def _sanitize_filename_component(value: object, fallback: str = "item", max_len: int = 80) -> str:
+    raw = str(value).strip()
+    if not raw:
+        return fallback
+    sanitized = re.sub(r"[^\w.-]+", "_", raw)
+    sanitized = sanitized.strip("._")
+    if not sanitized:
+        sanitized = fallback
+    return sanitized[:max_len]
+
+
+def _prepare_live_sample_record(example: dict, task_name: str, filter_key: str, rank: int) -> dict:
+    sample = copy.deepcopy(example)
+    sample["task_name"] = task_name
+    sample["filter_key"] = filter_key
+    sample["rank"] = rank
+    sample["logged_at"] = get_datetime_str()
+    if sample.get("arguments"):
+        sample["input"] = sample["arguments"][0]
+    sample["resps"] = sanitize_list(sample["resps"])
+    sample["filtered_resps"] = sanitize_list(sample["filtered_resps"])
+    if isinstance(sample["resps"], list) and len(sample["resps"]) == 1:
+        sample["resps"] = sample["resps"][0]
+    if isinstance(sample["filtered_resps"], list) and len(sample["filtered_resps"]) == 1:
+        sample["filtered_resps"] = sample["filtered_resps"][0]
+    return sample
+
+
+def _write_live_sample_file(live_sample_output_dir: Optional[str], task_name: str, filter_key: str, rank: int, example: dict) -> None:
+    if not live_sample_output_dir:
+        return
+    task_component = _sanitize_filename_component(task_name, fallback="task")
+    doc_component = _sanitize_filename_component(example.get("doc_id"), fallback="doc")
+    doc_hash = str(example.get("doc_hash", ""))[:8] or "nohash"
+    filter_component = _sanitize_filename_component(filter_key, fallback="default")
+    sample_dir_name = f"{task_component}_doc{doc_component}_rank{rank:03d}"
+    if filter_component not in {"default", "none"}:
+        sample_dir_name += f"_{filter_component}"
+    sample_dir_name += f"_{doc_hash}"
+    target_dir = os.path.join(live_sample_output_dir, sample_dir_name)
+    os.makedirs(target_dir, exist_ok=True)
+    final_path = os.path.join(target_dir, "sample.json")
+    tmp_path = f"{final_path}.tmp"
+    payload = _prepare_live_sample_record(example=example, task_name=task_name, filter_key=filter_key, rank=rank)
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, default=handle_non_serializable, ensure_ascii=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp_path, final_path)
+
+
 @positional_deprecated
 def simple_evaluate(
     model,
@@ -481,6 +532,13 @@ def simple_evaluate(
             global_rank=global_rank,
         )
 
+    live_sample_output_dir = None
+    if (log_samples or predict_only) and evaluation_tracker is not None and evaluation_tracker.output_path:
+        live_sample_output_dir = os.path.join(
+            evaluation_tracker.output_path,
+            f"run_{datetime_str.replace(':', '-')}_live_samples",
+        )
+
     eval_succeeded = False
     try:
         results = evaluate(
@@ -501,6 +559,7 @@ def simple_evaluate(
             cli_args=cli_args,
             eval_server_launcher=eval_launcher,
             response_cache=response_cache,
+            live_sample_output_dir=live_sample_output_dir,
         )
         eval_succeeded = True
     finally:
@@ -805,6 +864,7 @@ def evaluate(
     eval_server_launcher: Optional[Union[str, Callable]] = None,
     cli_args=None,
     response_cache: Optional[ResponseCache] = None,
+    live_sample_output_dir: Optional[str] = None,
 ):
     """Instantiate and evaluate a model on a list of tasks.
 
@@ -1205,6 +1265,13 @@ def evaluate(
                         example["input_media"] = input_media
                     example.update(metrics)
                     task_output.logged_samples.append(example)
+                    _write_live_sample_file(
+                        live_sample_output_dir=live_sample_output_dir,
+                        task_name=task_output.task_name,
+                        filter_key=filter_key,
+                        rank=RANK,
+                        example=example,
+                    )
                 for metric, value in metrics.items():
                     task_output.sample_metrics[(metric, filter_key)].append(value)
                 pbar.update(1)
