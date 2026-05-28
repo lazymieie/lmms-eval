@@ -203,6 +203,11 @@ class OpenAICompatible(OpenAICompatibleSimple):
             request_gen_kwargs = dict(gen_kwargs)
             max_new_tokens = request_gen_kwargs.get("max_new_tokens", 1024)
             temperature = request_gen_kwargs.get("temperature", 0)
+            top_p = request_gen_kwargs.get("top_p")
+            top_k = request_gen_kwargs.get("top_k")
+            min_p = request_gen_kwargs.get("min_p")
+            presence_penalty = request_gen_kwargs.get("presence_penalty")
+            repetition_penalty = request_gen_kwargs.get("repetition_penalty")
 
             if self.video_fps is not None and self.video_fps > 0:
                 video_kwargs = {"fps": self.video_fps}
@@ -215,6 +220,19 @@ class OpenAICompatible(OpenAICompatibleSimple):
                 "max_tokens": max_new_tokens,
                 "temperature": temperature,
             }
+            if top_p is not None:
+                payload["top_p"] = top_p
+            if top_k is not None:
+                payload["top_k"] = top_k
+            if min_p is not None:
+                payload["min_p"] = min_p
+            if presence_penalty is not None:
+                payload["presence_penalty"] = presence_penalty
+            if repetition_penalty is not None:
+                payload["repetition_penalty"] = repetition_penalty
+            extra_body = self._build_extra_body()
+            if extra_body is not None:
+                payload["extra_body"] = extra_body
             frames_used = self._count_image_parts(payload["messages"])
 
             if "o1" in self.model_version or "o3" in self.model_version or "o4" in self.model_version or "gpt-5" in self.model_version:

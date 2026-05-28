@@ -113,6 +113,8 @@ class OpenAICompatible(lmms):
         adaptive_failure_threshold: float = 0.05,
         prefix_aware_queue: bool = True,
         prefix_hash_chars: int = 256,
+        enable_thinking: Optional[bool] = None,
+        thinking_token_budget: Optional[int] = None,
         **kwargs,
     ) -> None:
         """
@@ -148,6 +150,8 @@ class OpenAICompatible(lmms):
         )
         self.prefix_aware_queue = parse_bool(prefix_aware_queue)
         self.prefix_hash_chars = max(32, int(prefix_hash_chars))
+        self.enable_thinking = None if enable_thinking is None else parse_bool(enable_thinking)
+        self.thinking_token_budget = None if thinking_token_budget is None else int(thinking_token_budget)
         # In China mainland, people usually use a VPN client to access international web
         # sites such as Google. Such a client usually configures macOS proxy server
         # settings. openai-python uses a httpx.Client with trust_env set to True. Such a
@@ -310,6 +314,14 @@ class OpenAICompatible(lmms):
             for j in i:
                 new_list.append(j)
         return new_list
+
+    def _build_extra_body(self) -> Optional[dict]:
+        extra_body = {}
+        if self.enable_thinking is not None:
+            extra_body["chat_template_kwargs"] = {"enable_thinking": self.enable_thinking}
+        if self.thinking_token_budget is not None:
+            extra_body["thinking_token_budget"] = self.thinking_token_budget
+        return extra_body or None
 
     def generate_until(self, requests) -> List[GenerationResult]:
         def _collate(x):
@@ -476,6 +488,11 @@ class OpenAICompatible(lmms):
             request_gen_kwargs = dict(gen_kwargs)
             max_new_tokens = request_gen_kwargs.get("max_new_tokens", 1024)
             temperature = request_gen_kwargs.get("temperature", 0)
+            top_p = request_gen_kwargs.get("top_p")
+            top_k = request_gen_kwargs.get("top_k")
+            min_p = request_gen_kwargs.get("min_p")
+            presence_penalty = request_gen_kwargs.get("presence_penalty")
+            repetition_penalty = request_gen_kwargs.get("repetition_penalty")
 
             payload = {
                 "model": self.model_version,
@@ -483,6 +500,19 @@ class OpenAICompatible(lmms):
                 "max_tokens": max_new_tokens,
                 "temperature": temperature,
             }
+            if top_p is not None:
+                payload["top_p"] = top_p
+            if top_k is not None:
+                payload["top_k"] = top_k
+            if min_p is not None:
+                payload["min_p"] = min_p
+            if presence_penalty is not None:
+                payload["presence_penalty"] = presence_penalty
+            if repetition_penalty is not None:
+                payload["repetition_penalty"] = repetition_penalty
+            extra_body = self._build_extra_body()
+            if extra_body is not None:
+                payload["extra_body"] = extra_body
             payload["messages"][0]["content"].append({"type": "text", "text": context})
             for img in imgs:
                 if isinstance(img, dict) and "audio_b64" in img:
