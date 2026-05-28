@@ -253,6 +253,30 @@ def _write_live_sample_file(live_sample_output_dir: Optional[str], task_name: st
     os.replace(tmp_path, final_path)
 
 
+def _initialize_live_sample_output_dir(
+    live_sample_output_dir: Optional[str],
+    model_name: Optional[str] = None,
+    task_names: Optional[list[str]] = None,
+) -> None:
+    if not live_sample_output_dir:
+        return
+    os.makedirs(live_sample_output_dir, exist_ok=True)
+    manifest_path = os.path.join(live_sample_output_dir, "run_manifest.json")
+    if os.path.exists(manifest_path):
+        return
+    manifest = {
+        "live_sample_output_dir": live_sample_output_dir,
+        "model_name": model_name,
+        "task_names": task_names or [],
+        "status": "initialized",
+        "created_at": get_datetime_str(),
+    }
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, default=handle_non_serializable, ensure_ascii=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 @positional_deprecated
 def simple_evaluate(
     model,
@@ -534,9 +558,15 @@ def simple_evaluate(
 
     live_sample_output_dir = None
     if (log_samples or predict_only) and evaluation_tracker is not None and evaluation_tracker.output_path:
+        os.makedirs(evaluation_tracker.output_path, exist_ok=True)
         live_sample_output_dir = os.path.join(
             evaluation_tracker.output_path,
             f"run_{datetime_str.replace(':', '-')}_live_samples",
+        )
+        _initialize_live_sample_output_dir(
+            live_sample_output_dir=live_sample_output_dir,
+            model_name=evaluation_tracker.general_config_tracker.model_name,
+            task_names=list(task_dict.keys()),
         )
 
     eval_succeeded = False
