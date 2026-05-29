@@ -69,6 +69,7 @@ from lmms_eval.utils import (
     is_multimodal_content,
     positional_deprecated,
     run_task_tests,
+    sanitize_list,
     simple_parse_args_string,
 )
 
